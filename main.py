@@ -118,6 +118,10 @@ def download(
                 urls.append(p)
         console.print(f"[blue]ℹ[/blue] 解析到 {len(urls)} 个链接\n")
 
+    # 过滤 typer 单命令模式下误传的命令名
+    if urls and urls[0] == "download":
+        urls = urls[1:] or None
+
     # 按平台分组
     bilibili_urls = []
     youtube_urls = []
