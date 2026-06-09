@@ -97,9 +97,10 @@ def download(
     # 优先命令行参数，其次环境变量
     effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or ""
 
+    from core.bilibili.metadata import set_cookie, _global_cookie
+
     # Cookie 设置与提示
     if effective_cookie:
-        from core.bilibili.metadata import set_cookie, _global_cookie
         raw_len = len(effective_cookie)
         set_cookie(effective_cookie)
         clean_len = len(_global_cookie)
@@ -110,7 +111,12 @@ def download(
         else:
             console.print(f"[dim]已设置登录 Cookie (原始 {raw_len} 字符, 有效 {clean_len} 字符)[/dim]")
     else:
-        console.print("[dim]提示：如需下载登录后才能看到的字幕，请用 --cookie 参数或 BILI_COOKIE 环境变量传入 SESSDATA[/dim]")
+        console.print("[dim]提示：如需下载登录后才能看到的字幕，请输入 SESSDATA（直接回车则以游客身份运行）：[/dim]")
+        user_cookie = input("  SESSDATA> ").strip()
+        if user_cookie:
+            effective_cookie = user_cookie
+            set_cookie(effective_cookie)
+            console.print(f"[dim]已设置登录 Cookie ({len(_global_cookie)} 字符)[/dim]")
 
     # 交互式输入
     if not urls:

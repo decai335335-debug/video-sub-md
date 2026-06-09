@@ -40,10 +40,9 @@ def set_cookie(cookie: str) -> None:
     if cleaned.lower().startswith("sessdata="):
         cleaned = cleaned.split("=", 1)[1]
 
-    # SESSDATA 通常是 URL 编码的 ASCII，也可能已被浏览器解码。
-    # 允许：字母、数字、% 和 SESSDATA 中常见的符号（逗号、星号、连字符、下划线）
-    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789%-_,*")
-    cleaned = "".join(ch for ch in cleaned if ch in allowed)
+    # SESSDATA 是 URL 编码或 base64 编码的 ASCII 字符串，
+    # 保留所有 ASCII 可打印字符（33-126），过滤空格、引号、换行等
+    cleaned = "".join(ch for ch in cleaned if 33 <= ord(ch) <= 126)
 
     _global_cookie = cleaned
 
