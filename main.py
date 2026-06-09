@@ -224,6 +224,14 @@ def download(
         console.print()
         console.print(file_table)
 
+    # 失败详情
+    failed_results = [r for r in results if r.status != "success" and r.error]
+    if failed_results:
+        console.print()
+        for r in failed_results:
+            platform_tag = "[orange3]B站[/orange3]" if r.platform == "bilibili" else "[red]YouTube[/red]"
+            console.print(f"[red]✗[/red] {platform_tag} {r.title or r.video_id or '未知'}: {r.error}")
+
     # CSV 报告
     _write_csv_report(report)
 
