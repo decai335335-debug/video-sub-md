@@ -4,6 +4,7 @@
 
 import asyncio
 import csv
+import os
 import re
 import urllib.parse
 from datetime import datetime
