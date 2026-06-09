@@ -105,7 +105,7 @@ def download(
         set_cookie(effective_cookie)
         clean_len = len(_global_cookie)
         if clean_len == 0:
-            console.print("[red]警告: Cookie 过滤后为空，字幕可能无法获取[/red]")
+            console.print(f"[red]警告: Cookie 过滤后为空 (原始值: {repr(effective_cookie)}), 字幕可能无法获取[/red]")
         elif clean_len < raw_len * 0.8:
             console.print(f"[yellow]警告: Cookie 过滤后长度从 {raw_len} 变为 {clean_len}，部分字符被移除[/yellow]")
         else:
