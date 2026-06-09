@@ -97,13 +97,14 @@ def download(
     # 优先命令行参数，其次环境变量
     effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or ""
 
-    from core.bilibili.metadata import set_cookie, _global_cookie
+    from core.bilibili.metadata import set_cookie
 
     # Cookie 设置与提示
     if effective_cookie:
         raw_len = len(effective_cookie)
         set_cookie(effective_cookie)
-        clean_len = len(_global_cookie)
+        import core.bilibili.metadata as _meta
+        clean_len = len(_meta._global_cookie)
         if clean_len == 0:
             console.print(f"[red]警告: Cookie 过滤后为空 (原始值: {repr(effective_cookie)}), 字幕可能无法获取[/red]")
         elif clean_len < raw_len * 0.8:
@@ -116,7 +117,8 @@ def download(
         if user_cookie:
             effective_cookie = user_cookie
             set_cookie(effective_cookie)
-            console.print(f"[dim]已设置登录 Cookie ({len(_global_cookie)} 字符)[/dim]")
+            import core.bilibili.metadata as _meta
+            console.print(f"[dim]已设置登录 Cookie ({len(_meta._global_cookie)} 字符)[/dim]")
 
     # 交互式输入
     if not urls:
