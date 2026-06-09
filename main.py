@@ -93,6 +93,9 @@ def download(
         border_style="cyan",
     ))
 
+    # 优先命令行参数，其次环境变量
+    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or ""
+
     # 交互式输入
     if not urls:
         console.print("[dim]未检测到参数，进入交互模式...[/dim]\n")
@@ -160,7 +163,7 @@ def download(
                 await asyncio.sleep(0.3)
                 try:
                     if platform == "bilibili":
-                        return await download_bilibili_task(url, output_dir, lang, cookie or "")
+                        return await download_bilibili_task(url, output_dir, lang, effective_cookie)
                     else:
                         return await download_youtube_task(url, output_dir, lang)
                 except Exception as e:
