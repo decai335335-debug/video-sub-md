@@ -21,9 +21,9 @@ from core.bilibili.extractor import extract_page_index, extract_bvid
 
 
 def _safe_filename(name: str) -> str:
-    """清理文件名中的非法字符。"""
+    """清理文件名中的非法字符（直接删除）。"""
     for ch in FILENAME_BAD_CHARS:
-        name = name.replace(ch, "_")
+        name = name.replace(ch, "")
     name = name.strip(" ._")
     if len(name) > FILENAME_MAX_LENGTH:
         name = name[:FILENAME_MAX_LENGTH].rstrip(" ._")

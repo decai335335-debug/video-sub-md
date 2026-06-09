@@ -1,5 +1,15 @@
 """全局配置"""
+import os
 from pathlib import Path
+
+# DeepSeek API 配置
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
+
+# Bilibili SESSDATA（锁定登录状态，无需每次手动输入）
+# 留空则每次启动时手动输入，或从环境变量读取
+DEFAULT_SESSDATA = os.environ.get("BILIBILI_SESSDATA", "")  # 本地运行时可在 config.py 直接写死，但不要提交到 GitHub
 
 # 默认输出目录
 DEFAULT_OUTPUT_DIR = Path("E:/Obsidian/主仓库/11-subtitles")
@@ -31,7 +41,7 @@ RETRY_DELAY = 1.0
 
 # 文件名安全映射（Windows 保留字符）
 FILENAME_BAD_CHARS = '\\/:*?"<>|'
-FILENAME_MAX_LENGTH = 80
+FILENAME_MAX_LENGTH = 150
 
 # Bilibili API
 BILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view"

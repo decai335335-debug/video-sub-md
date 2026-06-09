@@ -97,6 +97,7 @@ def save_subtitle(result: SubtitleResult, output_path: Path, fmt: str = "md") ->
         content = build_markdown(result)
         suffix = ".md"
 
-    output_path = output_path.with_suffix(suffix)
+    # 直接拼接后缀，不使用 with_suffix（避免中文路径下的 bug）
+    output_path = Path(str(output_path) + suffix)
     output_path.write_text(content, encoding="utf-8")
     return output_path

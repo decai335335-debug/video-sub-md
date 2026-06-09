@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
+import requests
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -23,11 +24,101 @@ from config import (
     OBSIDIAN_VAULT_NAME,
     OBSIDIAN_VAULT_ROOT,
     MAX_CONCURRENT,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_API_URL,
+    DEEPSEEK_MODEL,
 )
 from models import DownloadResult, BatchReport
 
 console = Console(force_terminal=True)
 app = typer.Typer(add_completion=False)
+
+
+def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "") -> Optional[str]:
+    """调用 DeepSeek API 为字幕内容生成深度分析"""
+    if not DEEPSEEK_API_KEY:
+        console.print("[yellow]警告: 未设置 DEEPSEEK_API_KEY 环境变量，跳过分析生成[/yellow]")
+        return None
+
+    prompt = f"""你是一位精通认知科学、传播学和知识工程的深度内容分析师。请对以下视频字幕按四层解码模型进行分析。
+
+视频标题：{video_title}
+
+字幕内容：
+{subtitle_content[:8000]}
+
+## 四层解码模型
+
+### 第一层：拓扑结构（Spatial Mapping）
+将视频内容视为一张认知地图，完成以下任务：
+
+1. **时间轴**：标记每个议题的起止时间，计算各议题时长占比
+2. **逻辑骨架**：识别整体结构：线性递进 / 螺旋上升 / 树状分支 / 网状关联
+3. **信息密度**：标出3个信息密度峰值段和3个低谷段，分析原因
+
+### 第二层：语义提取（Semantic Extraction）
+1. **核心命题**：用不超过20字概括视频的主命题（Thesis）
+2. **支撑论据**：提取所有事实、数据、案例、引用
+3. **概念图谱**：列出所有关键术语，定义其在视频语境中的含义
+
+### 第三层：认知机制（Cognitive Architecture）
+- **认知脚手架**：作者使用了哪些前置假设？观众需要具备什么先验知识？
+- **注意力调度**：哪些段落使用了悬念、重复、对比、故事化来锚定注意力？
+- **记忆锚点**：提取3个最可能被长期记住的"金句"或画面描述
+
+### 第四层：批判性重构（Critical Reconstruction）
+1. **反事实假设**：如果视频的核心结论是错误的，最可能的原因是什么？
+2. **沉默的证据**：视频刻意回避或遗漏了哪些关键视角？
+3. **适用边界**：这些内容在什么情境下会失效？
+
+## 元认知安全锁
+如果某部分分析因字幕信息不足无法完成，请明确标注 **[信息不足]**，禁止推测编造。
+
+请按以上格式输出深度分析内容："""
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 800,
+            "temperature": 0.7,
+        }
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        return summary if summary else None
+    except Exception as e:
+        console.print(f"[red]调用 DeepSeek API 失败: {e}[/red]")
+        return None
+
+
+def add_summary_to_file(filepath: Path, summary: str):
+    """将简介添加到字幕文件开头（位于 YAML frontmatter 之后）"""
+    try:
+        content = filepath.read_text(encoding="utf-8")
+        # 找到 frontmatter 结束位置（第二个 ---）
+        parts = content.split("---", 2)
+        # 将多行简介转换为 Markdown 引用块格式
+        summary_block = "\n> ".join([""] + summary.split("\n"))
+        if len(parts) >= 3:
+            # 有 frontmatter，在第二个 --- 之后插入简介
+            frontmatter = parts[0] + "---" + parts[1] + "---"
+            body = parts[2]
+            new_content = frontmatter + f"\n\n> {summary_block}\n" + body
+        else:
+            # 没有 frontmatter，直接在开头插入
+            new_content = f"> {summary_block}\n\n{content}"
+        filepath.write_text(new_content, encoding="utf-8")
+        console.print(f"[green]✓[/green] 已添加简介: {filepath.name}")
+    except Exception as e:
+        console.print(f"[red]写入简介失败: {e}[/red]")
 
 
 def detect_platform(url: str) -> str:
@@ -94,8 +185,8 @@ def download(
         border_style="cyan",
     ))
 
-    # 优先命令行参数，其次环境变量
-    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or ""
+    # 优先命令行参数，其次环境变量，最后配置文件中的默认值
+    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or config.DEFAULT_SESSDATA or ""
 
     from core.bilibili.metadata import set_cookie
 
@@ -261,6 +352,33 @@ def download(
 
     # CSV 报告
     _write_csv_report(report)
+
+    # 询问是否生成分析
+    if success_results and DEEPSEEK_API_KEY:
+        console.print()
+        choice = input("是否为下载的字幕生成深度分析？(a 是 / b 否): ").strip().lower()
+        if choice == "a":
+            console.print("\n[dim]正在生成深度分析...[/dim]")
+            for r in success_results:
+                if r.filepath and r.filepath.exists():
+                    try:
+                        content = r.filepath.read_text(encoding="utf-8")
+                        summary = generate_summary_with_deepseek(content, r.title or "")
+                        if summary:
+                            add_summary_to_file(r.filepath, summary)
+                            console.print(f"[dim]  已处理: {r.filepath.name}[/dim]")
+                        else:
+                            console.print(f"[yellow]  跳过（未生成分析）: {r.filepath.name}[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]  处理失败: {r.filepath.name} - {e}[/red]")
+            console.print("[dim]分析生成完成[/dim]")
+        elif choice == "b":
+            console.print("[dim]已跳过分析生成[/dim]")
+        else:
+            console.print("[yellow]无效选择，已跳过分析生成[/yellow]")
+    elif success_results and not DEEPSEEK_API_KEY:
+        console.print()
+        console.print("[dim]提示: 未设置 DEEPSEEK_API_KEY 环境变量，如需生成分析请先设置[/dim]")
 
     if report.failed > 0:
         raise typer.Exit(1)
