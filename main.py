@@ -124,7 +124,7 @@ def download(
 
     # 过滤 typer 单命令模式下误传的命令名
     if urls and urls[0] == "download":
-        urls = urls[1:] or None
+        urls = urls[1:] if len(urls) > 1 else []
 
     # 按平台分组
     bilibili_urls = []
