@@ -40,39 +40,140 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
         console.print("[yellow]警告: 未设置 DEEPSEEK_API_KEY 环境变量，跳过分析生成[/yellow]")
         return None
 
-    prompt = f"""你是一位精通认知科学、传播学和知识工程的深度内容分析师。请对以下视频字幕按四层解码模型进行分析。
+    prompt = f"""# 🧠 视频字幕深度解析协议 v3.0（最终版）
+
+你是一位精通认知科学、传播学和知识工程的深度内容分析师。请严格按以下协议执行，禁止偏离。
+
+---
+
+## 🔒 元认知安全锁（最高优先级，不可覆盖）
+
+1. **所有分析必须严格基于提供的字幕文本**。禁止推测视频画面、语气、表情或音频信息。
+2. **禁止编造**。如果字幕未提供某信息，明确标注 **[信息不足]**，不得补全。
+3. **引用原文时必须使用引号**，不得改写、润色或概括后冒充原文。
+4. **数量不强制**：以下分析中，若内容本身不足，允许输出"无"或"仅1项"，禁止为凑数而拆分或编造。
+
+---
 
 视频标题：{video_title}
 
 字幕内容：
 {subtitle_content[:8000]}
 
-## 四层解码模型
+---
 
-### 第一层：拓扑结构（Spatial Mapping）
-将视频内容视为一张认知地图，完成以下任务：
+## 📋 第一层：通用底层分析（所有视频必执行）
 
-1. **时间轴**：标记每个议题的起止时间，计算各议题时长占比
-2. **逻辑骨架**：识别整体结构：线性递进 / 螺旋上升 / 树状分支 / 网状关联
-3. **信息密度**：标出3个信息密度峰值段和3个低谷段，分析原因
+### 1.1 拓扑结构（Spatial Mapping）
 
-### 第二层：语义提取（Semantic Extraction）
-1. **核心命题**：用不超过20字概括视频的主命题（Thesis）
-2. **支撑论据**：提取所有事实、数据、案例、引用
-3. **概念图谱**：列出所有关键术语，定义其在视频语境中的含义
+以纯文本列表输出，格式如下：
 
-### 第三层：认知机制（Cognitive Architecture）
-- **认知脚手架**：作者使用了哪些前置假设？观众需要具备什么先验知识？
-- **注意力调度**：哪些段落使用了悬念、重复、对比、故事化来锚定注意力？
-- **记忆锚点**：提取3个最可能被长期记住的"金句"或画面描述
+- **时间轴切片**（按实际议题切分，不强制数量）：
+  - [时间戳] - [主题] - [该段核心动作：引入/展开/论证/总结]
+- **逻辑骨架**：[线性递进 / 螺旋上升 / 树状分支 / 网状关联 / 单一议题]
+- **信息密度**：
+  - 峰值段：[时间戳] - 原因：[一句话分析]
+  - 低谷段：[时间戳] - 原因：[一句话分析]
 
-### 第四层：批判性重构（Critical Reconstruction）
-1. **反事实假设**：如果视频的核心结论是错误的，最可能的原因是什么？
+### 1.2 语义提取（Semantic Extraction）
+
+- **核心命题**：用不超过20字概括视频主旨（Thesis）
+- **支撑论据表**（提取所有可辨识的，上限不封顶）：
+  - 论据：[原文摘要] | 可信度：[A-权威来源/B-个人经验/C-未验证] | 标记：[📚/👤/⚠️]
+- **概念图谱**：
+  - 术语：[术语] | 视频语境定义：[定义] | 与日常用法差异：[差异/无差异]
+
+### 1.3 认知机制（Cognitive Architecture）
+
+- **认知脚手架**：观众必须具备的先验知识（列出所有，不强制数量）
+- **注意力调度**：哪些段落使用了以下技巧？各举一例原文：
+  - 悬念：[原文]
+  - 重复：[原文]
+  - 对比：[原文]
+  - 故事化：[原文]
+- **记忆锚点**：提取最可能被长期记住的3句原文，分析其记忆编码机制（如：韵律/反差/具体意象）
+
+### 1.4 批判性重构（Critical Reconstruction）
+
+1. **反事实假设**：如果核心结论错误，最可能的原因是什么？
 2. **沉默的证据**：视频刻意回避或遗漏了哪些关键视角？
-3. **适用边界**：这些内容在什么情境下会失效？
+3. **适用边界**：这些内容在什么情境下会失效？给出至少2个反例场景。
 
-## 元认知安全锁
-如果某部分分析因字幕信息不足无法完成，请明确标注 **[信息不足]**，禁止推测编造。
+### 1.5 趣味叙事重构（Fun Narrative Reconstruction）【新增】
+用**非学术的、有趣的**方式重新讲述这个视频的核心故事，要求：
+
+- **类比引擎**：将技术概念映射到日常生活场景，至少3个类比（如：把"禁用异常"比作"手术室禁用'也许能行'"）
+- **彩蛋挖掘**：提取视频中所有有趣的旁支细节、冷知识、个人轶事，至少3个，并解释它们如何服务于主线叙事
+- **叙事节奏（电影化）**：用电影类型描述视频结构（如：灾难片→历史悬疑→动作片→哲学片）
+- **一句话钩子**：用一句带有悬念或反差感的话概括视频，适合推荐给朋友
+
+输出格式：轻松但不失准确，可适度使用emoji和比喻。可以联网搜索推理，类比举例，但禁止编造视频未提及的内容。
+
+---
+
+## 🔌 第二层：类型识别与条件激活
+
+请基于内容特征自行判断视频类型，**只激活对应插件**：
+
+### 若识别为【教学型】（传授技能/系统知识/操作步骤）→ 激活插件A
+
+#### A1 学习路径重构
+- **先决条件检查清单**：
+  - [ ] 知识前提：[必须预先掌握的概念]
+  - [ ] 工具前提：[需要的软件/硬件/环境]
+  - [ ] 认知前提：[需要具备的思维方式]
+- **核心知识模块**（按实际依赖关系排列，不强制数量）：
+  - 模块：[名称] | 难度：⭐/⭐⭐/⭐⭐⭐ | 可独立学习：是/否 | 前置依赖：[模块名/无]
+- **常见陷阱地图**：
+  - 易错点：[描述] | 原文位置：[时间戳] | 纠正方法：[具体动作]
+
+#### A2 知识晶体提取
+- 提取所有可抽象为通用模式的知识点，格式：
+  - 场景：[具体场景] | 视频解法：[步骤] | 通用模式：[底层逻辑] | 可迁移领域：[领域]
+
+#### A3 效率审计
+- **信噪比评估**：核心知识占比约___%，冗余内容（寒暄/铺垫/重复）占比约___%
+- **最优学习策略**：
+  - 若只看一遍：重点看 [时间戳] 段，因为 [理由]
+  - 若看两遍：第二遍聚焦 [时间戳] 段，因为 [理由]
+
+---
+
+### 若识别为【观点型】（表达立场/说服受众/评论分析）→ 激活插件B
+
+#### B1 论证拆解（Argument Tree）
+以缩进文本树输出：
+
+核心主张：[一句话]
+├── 论据A：[描述]
+│   ├── 支撑A1：[事实/数据] — 可信度：[A/B/C]
+│   └── 支撑A2：[案例/引用]
+├── 论据B：[描述]
+│   └── 支撑B1：[...]
+└── 🔴 隐含前提X：[未明说但必须成立的前提] ← 论证最脆弱点
+
+#### B2 修辞与说服分析
+提取所有可辨识的策略，格式：
+- 策略：[权威背书/情感共鸣/虚假二分/幸存者偏差/其他] | 原文证据："[引用]" | 效果：[增强可信度/降低批判性/限制思考空间] | 识别难度：[低/中/高]
+
+#### B3 立场光谱定位
+- **坐标**：极端保守 [1]——[2]——[3]——[4]——[5] [极端激进]
+- **作者位置**：约___分（简述判断依据）
+- **邻近立场**：[2-3个相近但有差异的观点]
+- **对立立场**：[2-3个最强反驳观点]
+
+#### B4 行动转化
+- 立即（24h内）：[具体动作] | 完成标志：[标准]
+- 短期（1周内）：[验证假设] | 判断依据：[标准]
+- 长期（1-3月）：[跟踪指标] | 信号特征：[标准]
+
+---
+
+### 若识别为【混合型】（教学+观点交织）→ 同时激活A+B
+
+并额外输出：
+- **段落属性标注**：哪些时间区间是知识传授，哪些是观点输出？
+- **交界点分析**：知识→观点的转折标志是什么？观点→知识的过渡方式是什么？
 
 请按以上格式输出深度分析内容："""
 
@@ -86,12 +187,20 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
             "messages": [
                 {"role": "user", "content": prompt}
             ],
-            "max_tokens": 800,
+            "max_tokens": 32768,
             "temperature": 0.7,
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
         }
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=60)
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=180)
         response.raise_for_status()
         result = response.json()
+        
+        # 检查是否因长度被截断
+        finish_reason = result.get("choices", [{}])[0].get("finish_reason", "")
+        if finish_reason == "length":
+            console.print("[yellow]警告: API 输出达到长度限制，分析内容可能不完整[/yellow]")
+        
         summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         return summary if summary else None
     except Exception as e:
@@ -171,71 +280,8 @@ async def download_youtube_task(url: str, output_dir: Path, lang: Optional[str])
     return normalize_result(result, "youtube")
 
 
-@app.command()
-def download(
-    urls: Optional[List[str]] = typer.Argument(None, help="视频链接（支持 Bilibili + YouTube 混合）"),
-    lang: Optional[str] = typer.Option(None, "--lang", "-l", help="指定语言代码，如 zh, en"),
-    max_concurrent: int = typer.Option(MAX_CONCURRENT, "--max-concurrent", "-c", help="最大并发数"),
-    cookie: Optional[str] = typer.Option(None, "--cookie", help="Bilibili SESSDATA Cookie"),
-):
-    """下载 Bilibili + YouTube 字幕为 Markdown，支持混合链接"""
-    console.print(Panel.fit(
-        "[bold cyan]video-sub-md[/bold cyan] — 统一视频字幕下载器\n"
-        "[dim]Bilibili + YouTube · Markdown 输出 · Ctrl+点击跳转 Obsidian[/dim]",
-        border_style="cyan",
-    ))
-
-    # 优先命令行参数，其次环境变量，最后配置文件中的默认值
-    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or config.DEFAULT_SESSDATA or ""
-
-    from core.bilibili.metadata import set_cookie
-
-    # Cookie 设置与提示
-    if effective_cookie:
-        raw_len = len(effective_cookie)
-        set_cookie(effective_cookie)
-        import core.bilibili.metadata as _meta
-        clean_len = len(_meta._global_cookie)
-        if clean_len == 0:
-            console.print(f"[red]警告: Cookie 过滤后为空 (原始值: {repr(effective_cookie)}), 字幕可能无法获取[/red]")
-        elif clean_len < raw_len * 0.8:
-            console.print(f"[yellow]警告: Cookie 过滤后长度从 {raw_len} 变为 {clean_len}，部分字符被移除[/yellow]")
-        else:
-            console.print(f"[dim]已设置登录 Cookie (原始 {raw_len} 字符, 有效 {clean_len} 字符)[/dim]")
-    else:
-        console.print("[dim]提示：如需下载登录后才能看到的字幕，请输入 SESSDATA（直接回车则以游客身份运行）：[/dim]")
-        user_cookie = input("  SESSDATA> ").strip()
-        if user_cookie:
-            effective_cookie = user_cookie
-            set_cookie(effective_cookie)
-            import core.bilibili.metadata as _meta
-            console.print(f"[dim]已设置登录 Cookie ({len(_meta._global_cookie)} 字符)[/dim]")
-
-    # 交互式输入
-    if not urls:
-        console.print("[dim]未检测到参数，进入交互模式...[/dim]\n")
-        console.print("-" * 50)
-        console.print("  [bold]粘贴视频链接[/bold]")
-        console.print("  · 支持 Bilibili + YouTube 混合粘贴")
-        console.print("  · 空格、逗号、换行分隔均可")
-        console.print("  · 输入空行结束")
-        console.print("-" * 50)
-        raw_lines = []
-        while True:
-            line = input("  > ")
-            if line.strip() == "":
-                break
-            raw_lines.append(line)
-        all_text = "\n".join(raw_lines)
-        parts = [p.strip() for p in all_text.replace(",", " ").split() if p.strip()]
-        seen = set()
-        urls = []
-        for p in parts:
-            if p not in seen:
-                seen.add(p)
-                urls.append(p)
-        console.print(f"[blue]ℹ[/blue] 解析到 {len(urls)} 个链接\n")
-
+def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int, effective_cookie: str):
+    """处理单次下载任务"""
     # 过滤 typer 单命令模式下误传的命令名
     if urls and urls[0] == "download":
         urls = urls[1:] if len(urls) > 1 else []
@@ -254,7 +300,7 @@ def download(
 
     if not bilibili_urls and not youtube_urls:
         console.print("[red]错误：没有有效的视频链接[/red]")
-        raise typer.Exit(1)
+        return
 
     console.print(
         f"[dim]Bilibili: {len(bilibili_urls)} 个 | YouTube: {len(youtube_urls)} 个 | "
@@ -380,8 +426,90 @@ def download(
         console.print()
         console.print("[dim]提示: 未设置 DEEPSEEK_API_KEY 环境变量，如需生成分析请先设置[/dim]")
 
-    if report.failed > 0:
-        raise typer.Exit(1)
+    return report
+
+
+@app.command()
+def download(
+    urls: Optional[List[str]] = typer.Argument(None, help="视频链接（支持 Bilibili + YouTube 混合）"),
+    lang: Optional[str] = typer.Option(None, "--lang", "-l", help="指定语言代码，如 zh, en"),
+    max_concurrent: int = typer.Option(MAX_CONCURRENT, "--max-concurrent", "-c", help="最大并发数"),
+    cookie: Optional[str] = typer.Option(None, "--cookie", help="Bilibili SESSDATA Cookie"),
+):
+    """下载 Bilibili + YouTube 字幕为 Markdown，支持混合链接，按 q 退出"""
+    console.print(Panel.fit(
+        "[bold cyan]video-sub-md[/bold cyan] — 统一视频字幕下载器\n"
+        "[dim]Bilibili + YouTube · Markdown 输出 · Ctrl+点击跳转 Obsidian · 按 q 退出[/dim]",
+        border_style="cyan",
+    ))
+
+    # 优先命令行参数，其次环境变量，最后配置文件中的默认值
+    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or config.DEFAULT_SESSDATA or ""
+
+    from core.bilibili.metadata import set_cookie
+
+    # Cookie 设置与提示
+    if effective_cookie:
+        raw_len = len(effective_cookie)
+        set_cookie(effective_cookie)
+        import core.bilibili.metadata as _meta
+        clean_len = len(_meta._global_cookie)
+        if clean_len == 0:
+            console.print(f"[red]警告: Cookie 过滤后为空 (原始值: {repr(effective_cookie)}), 字幕可能无法获取[/red]")
+        elif clean_len < raw_len * 0.8:
+            console.print(f"[yellow]警告: Cookie 过滤后长度从 {raw_len} 变为 {clean_len}，部分字符被移除[/yellow]")
+        else:
+            console.print(f"[dim]已设置登录 Cookie (原始 {raw_len} 字符, 有效 {clean_len} 字符)[/dim]")
+    else:
+        console.print("[dim]提示：如需下载登录后才能看到的字幕，请输入 SESSDATA（直接回车则以游客身份运行）：[/dim]")
+        user_cookie = input("  SESSDATA> ").strip()
+        if user_cookie:
+            effective_cookie = user_cookie
+            set_cookie(effective_cookie)
+            import core.bilibili.metadata as _meta
+            console.print(f"[dim]已设置登录 Cookie ({len(_meta._global_cookie)} 字符)[/dim]")
+
+    # 循环处理下载任务
+    while True:
+        current_urls = urls if urls else []
+        urls = None  # 重置，下次进入交互模式
+
+        # 交互式输入（首次或后续循环）
+        if not current_urls:
+            console.print("\n" + "-" * 50)
+            console.print("  [bold]粘贴视频链接[/bold]")
+            console.print("  · 支持 Bilibili + YouTube 混合粘贴")
+            console.print("  · 空格、逗号、换行分隔均可")
+            console.print("  · 输入空行结束，按 q 退出")
+            console.print("-" * 50)
+            raw_lines = []
+            while True:
+                line = input("  > ")
+                if line.strip().lower() == "q":
+                    console.print("\n[dim]再见！[/dim]")
+                    raise typer.Exit(0)
+                if line.strip() == "":
+                    break
+                raw_lines.append(line)
+            if not raw_lines:
+                console.print("[red]错误：没有输入任何链接[/red]")
+                continue
+            all_text = "\n".join(raw_lines)
+            parts = [p.strip() for p in all_text.replace(",", " ").split() if p.strip()]
+            seen = set()
+            current_urls = []
+            for p in parts:
+                if p not in seen:
+                    seen.add(p)
+                    current_urls.append(p)
+            console.print(f"[blue]ℹ[/blue] 解析到 {len(current_urls)} 个链接\n")
+
+        # 处理下载
+        report = _process_downloads(current_urls, lang, max_concurrent, effective_cookie)
+        
+        # 检查是否有失败（非循环模式下）
+        if urls and report and report.failed > 0:
+            raise typer.Exit(1)
 
 
 def _write_csv_report(report: BatchReport):
