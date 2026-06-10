@@ -218,28 +218,21 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 
 
 def add_summary_to_file(filepath: Path, summary: str):
-    """将深度分析添加到字幕文件中（位于标题元数据之后、字幕内容之前）"""
+    """将简介添加到字幕文件开头（位于 YAML frontmatter 之后）"""
     try:
         content = filepath.read_text(encoding="utf-8")
-        # 文件结构: [标题+元数据] --- [字幕内容]
-        # 用 split("---", 1) 分成两部分，--- 只是 markdown 分隔线
-        parts = content.split("---", 1)
-        
+        # 找到 frontmatter 结束位置（第二个 ---）
+        parts = content.split("---", 2)
         # 将多行简介转换为 Markdown 引用块格式
-        summary_lines = [line for line in summary.split("\n") if line.strip()]
-        summary_block = "\n".join(f"> {line}" for line in summary_lines)
-        
-        if len(parts) >= 2:
-            header = parts[0].rstrip("\n")
-            # 确保 header 和 --- 之间有一个空行
-            if not header.endswith("\n"):
-                header += "\n"
-            body = parts[1].lstrip("\n")
-            new_content = f"{header}---\n\n{summary_block}\n\n{body}"
+        summary_block = "\n> ".join([""] + summary.split("\n"))
+        if len(parts) >= 3:
+            # 有 frontmatter，在第二个 --- 之后插入简介
+            frontmatter = parts[0] + "---" + parts[1] + "---"
+            body = parts[2]
+            new_content = frontmatter + f"\n\n> {summary_block}\n" + body
         else:
-            # 没有 --- 分隔线，直接在开头插入
-            new_content = f"{summary_block}\n\n{content}"
-        
+            # 没有 frontmatter，直接在开头插入
+            new_content = f"> {summary_block}\n\n{content}"
         filepath.write_text(new_content, encoding="utf-8")
         console.print(f"[green]✓[/green] 已添加简介: {filepath.name}")
     except Exception as e:
@@ -481,7 +474,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                                 model=DEEPSEEK_FLASH_MODEL
                             )
                             if translation:
-                                add_translation_to_file(r.filepath, translation, subtitle_content)
+                                add_translation_to_file(r.filepath, translation)
                                 console.print(f"[dim]  ✓ 翻译完成: {r.filepath.name}[/dim]")
                             else:
                                 console.print(f"[yellow]  ✗ 翻译失败: {r.filepath.name}[/yellow]")
