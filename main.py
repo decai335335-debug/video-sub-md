@@ -141,9 +141,11 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
         console.print("[yellow]警告: 未设置 DEEPSEEK_API_KEY 环境变量，跳过分析生成[/yellow]")
         return None
 
-    prompt = f"""# 🧠 视频字幕深度解析协议 v3.0（最终版）
+    prompt = f"""## 🧠 视频字幕深度解析协议 v3.0（最终版）
 
 你是一位精通认知科学、传播学和知识工程的深度内容分析师。请严格按以下协议执行，禁止偏离。
+
+注意：输出时不要以 `# ` 一级标题开头，直接从 `## ` 二级标题开始，避免与文件外层标题层级冲突。
 
 ---
 
@@ -185,11 +187,11 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 以纯文本列表输出，格式如下：
 
 - **时间轴切片**（按实际议题切分，不强制数量）：
-  - [时间戳] - [主题] - [该段核心动作：引入/展开/论证/总结]
+  - `时间戳` — [主题] — [该段核心动作：引入/展开/论证/总结]
 - **逻辑骨架**：[线性递进 / 螺旋上升 / 树状分支 / 网状关联 / 单一议题]
 - **信息密度**：
-  - 峰值段：[时间戳] - 原因：[一句话分析]
-  - 低谷段：[时间戳] - 原因：[一句话分析]
+  - 峰值段：`时间戳` — 原因：[一句话分析]
+  - 低谷段：`时间戳` — 原因：[一句话分析]
 
 ### 1.2 语义提取（Semantic Extraction）
 
@@ -215,6 +217,8 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
   - 对比：[原文]
   - 故事化：[原文]
 - **记忆锚点**：提取最可能被长期记住的3句原文，分析其记忆编码机制（如：韵律/反差/具体意象）
+
+---
 
 ### 1.4 批判性重构（Critical Reconstruction）
 
@@ -255,7 +259,7 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 
   | 易错点 | 原文位置 | 纠正方法 |
   |:---|:---|:---|
-  | [描述] | [时间戳] | [具体动作] |
+  | [描述] | `时间戳` | [具体动作] |
 
 #### A2 知识晶体提取
 - 提取所有可抽象为通用模式的知识点，用 Markdown 表格输出：
@@ -267,8 +271,8 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 #### A3 效率审计
 - **信噪比评估**：核心知识占比约___%，冗余内容（寒暄/铺垫/重复）占比约___%
 - **最优学习策略**：
-  - 若只看一遍：重点看 [时间戳] 段，因为 [理由]
-  - 若看两遍：第二遍聚焦 [时间戳] 段，因为 [理由]
+  - 若只看一遍：重点看 `时间戳` 段，因为 [理由]
+  - 若看两遍：第二遍聚焦 `时间戳` 段，因为 [理由]
 
 ---
 
