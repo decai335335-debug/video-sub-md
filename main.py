@@ -389,16 +389,25 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         file_table.add_column("视频", style="green")
         file_table.add_column("文件路径")
         for r in success_results:
-            try:
-                rel_path = r.filepath.relative_to(OBSIDIAN_VAULT_ROOT).with_suffix("")
-                rel_path_str = str(rel_path).replace("\\", "/")
-                vault = urllib.parse.quote(OBSIDIAN_VAULT_NAME)
-                file = urllib.parse.quote(rel_path_str, safe="/")
+            # 生成 Obsidian URI，优先使用 vault+file 模式
+            filepath_str = str(r.filepath).replace("\\", "/")
+            vault_root_str = str(OBSIDIAN_VAULT_ROOT).replace("\\", "/")
+            vault = urllib.parse.quote(OBSIDIAN_VAULT_NAME)
+            
+            # 检查文件是否在 vault 根目录下（字符串前缀匹配，避免 relative_to 的大小写问题）
+            if filepath_str.lower().startswith(vault_root_str.lower() + "/"):
+                rel_path = filepath_str[len(vault_root_str) + 1 :]
+                if rel_path.endswith(".md"):
+                    rel_path = rel_path[:-3]
+                file = urllib.parse.quote(rel_path, safe="/")
                 obsidian_url = f"obsidian://open?vault={vault}&file={file}"
                 path_text = Text(r.filepath.name, style=f"link {obsidian_url}")
-            except ValueError:
+            else:
+                # fallback: 文件不在 vault 下，用 file:// 链接
                 file_link = r.filepath.parent.resolve().as_uri()
                 path_text = Text(r.filepath.name, style=f"link {file_link}")
+                console.print(f"[yellow]警告:[/yellow] {r.filepath.name} 不在 Obsidian vault 路径下，使用 file:// 链接")
+            
             platform_tag = "[orange3]B站[/orange3]" if r.platform == "bilibili" else "[red]YouTube[/red]"
             file_table.add_row(platform_tag, r.title or "-", path_text)
         console.print()
