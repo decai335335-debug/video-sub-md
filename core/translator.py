@@ -1,6 +1,7 @@
 """
 字幕翻译模块 - 单独调试用
 """
+import re
 import requests
 from pathlib import Path
 from typing import Optional
@@ -109,17 +110,24 @@ def translate_subtitle_with_deepseek(
         
         print(f"翻译进度: {chunk_num}/{total_chunks}", flush=True)
         
+        # 给每行加全局连续编号，帮助AI严格按行对应
+        global_start_idx = i
+        numbered_lines = '\n'.join(f"[{global_start_idx + idx + 1}] {line}" for idx, line in enumerate(chunk_lines))
+        expected_count = len(chunk_lines)
+        
         prompt = f"""请将以下英文字幕翻译成中文。
 
-要求（极其重要，必须严格遵守）：
-1. 每行英文严格对应一行中文译文，总行数必须完全相同
-2. 每行译文必须输出为一整行，无论译文多长都绝对不要换行拆分
-3. 不要合并多行，保持每行独立
-4. 只输出中文译文，不要输出英文原文、解释、标记或空行
-5. 保持原有顺序，一行都不能多、一行都不能少
+输入共 {expected_count} 行，你的输出必须严格为 {expected_count} 行，绝对禁止多行或少行。
+
+要求：
+1. 每行输入对应一行输出，保持原有顺序
+2. 每行译文必须输出为一整行，无论多长都绝对禁止换行拆分
+3. 输出格式必须与输入一致：每行以 [编号] 开头，后面紧跟译文
+4. 不要合并多行，保持每行独立
+5. 除带编号的译文行外，不要输出任何其他内容（不要总结、解释、空行）
 
 字幕内容：
-{chunk_text}"""
+{numbered_lines}"""
         
         for attempt in range(max_retries):
             try:
@@ -147,8 +155,28 @@ def translate_subtitle_with_deepseek(
                 if not translation:
                     raise ValueError("翻译结果为空")
                 
-                # 后处理：过滤空行，修复AI可能的多行拆分问题
-                translated_lines = [ln for ln in translation.split('\n') if ln.strip()]
+                # 后处理：解析带编号的译文行，验证编号连续性
+                translated_lines = []
+                expected_start = global_start_idx + 1
+                last_num = expected_start - 1
+                
+                for ln in translation.split('\n'):
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    m = re.match(r'^\[(\d+)\]\s*(.*)', ln)
+                    if m:
+                        num = int(m.group(1))
+                        text = m.group(2).strip()
+                        # 验证编号连续性
+                        if num != last_num + 1:
+                            print(f"  警告: 第 {chunk_num} 段编号不连续，期望 [{last_num + 1}]，实际 [{num}]")
+                        last_num = num
+                        translated_lines.append(text)
+                    else:
+                        # 没有编号前缀，整行作为译文（AI没按格式返回）
+                        translated_lines.append(ln)
+                
                 expected_lines = len(chunk_lines)
                 
                 if len(translated_lines) != expected_lines:
