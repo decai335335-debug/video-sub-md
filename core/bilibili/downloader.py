@@ -21,9 +21,11 @@ from core.bilibili.extractor import extract_page_index, extract_bvid
 
 
 def _safe_filename(name: str) -> str:
-    """清理文件名中的非法字符（直接删除）。"""
+    """清理文件名中的非法字符（直接删除），替换 # 为 _ 避免 Obsidian URI 解析问题。"""
     for ch in FILENAME_BAD_CHARS:
         name = name.replace(ch, "")
+    # 替换 # 为 _，避免 Obsidian URI 把 #devsetup 解析为标题锚点
+    name = name.replace("#", "_")
     name = name.strip(" ._")
     if len(name) > FILENAME_MAX_LENGTH:
         name = name[:FILENAME_MAX_LENGTH].rstrip(" ._")

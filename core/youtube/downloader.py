@@ -90,10 +90,12 @@ def _resolve_language(
 
 
 def _safe_filename(title: str, video_id: str) -> str:
-    """生成安全的文件名，直接删除 Windows 保留字符"""
+    """生成安全的文件名，删除 Windows 保留字符，替换 # 为 _ 避免 Obsidian URI 解析问题"""
     safe = title.strip()
     for ch in FILENAME_BAD_CHARS:
         safe = safe.replace(ch, "")
+    # 替换 # 为 _，避免 Obsidian URI 把 #devsetup 解析为标题锚点
+    safe = safe.replace("#", "_")
     # 限制长度，保留空间给 ID 后缀
     safe = safe[:80].strip("._")
     if not safe:
