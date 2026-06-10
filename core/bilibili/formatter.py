@@ -50,24 +50,47 @@ def build_txt(body: List[SubtitleItem]) -> str:
 
 
 def build_markdown(result: SubtitleResult, include_timestamp: bool = True) -> str:
-    """构建 Markdown 格式字幕。"""
+    """构建 Markdown 格式字幕。
+    
+    头部格式与 YouTube 保持一致：
+    # 标题
+    **频道:** ...
+    **链接:** ...
+    **语言:** ...
+    **时长:** ...
+    **提取时间:** ...
+    ---
+    """
+    import datetime
+    
     lines = []
-
-    # YAML frontmatter
-    lines.append("---")
-    lines.append(f'title: "{result.title}"')
-    lines.append(f'bvid: "{result.bvid}"')
-    lines.append(f'cid: "{result.cid}"')
-    lines.append(f'author: ""')
-    lines.append(f'subtitle_lang: "{result.language_doc or result.language}"')
-    lines.append(f'is_ai: {str(result.is_ai).lower()}')
-    lines.append("---")
-    lines.append("")
-
+    
+    # 标题
     if result.page_title and result.page_title != result.title:
         lines.append(f"# {result.title} — {result.page_title}")
     else:
         lines.append(f"# {result.title}")
+    lines.append("")
+    
+    # 元数据（与 YouTube 格式保持一致）
+    lines.append(f"**频道:** {result.author or '未知'}  ")
+    lines.append(f"**链接:** {result.url or f'https://www.bilibili.com/video/{result.bvid}'}  ")
+    lines.append(f"**语言:** {result.language_doc or result.language}  ")
+    
+    if result.duration:
+        m, s = divmod(int(result.duration), 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            lines.append(f"**时长:** {h:02d}:{m:02d}:{s:02d}")
+        else:
+            lines.append(f"**时长:** {m:02d}:{s:02d}")
+    
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines.append(f"**提取时间:** {now}")
+    lines.append("")
+    
+    # 分隔线
+    lines.append("---")
     lines.append("")
 
     with_hours = any(item.from_time >= 3600 for item in result.body)

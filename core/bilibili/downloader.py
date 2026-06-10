@@ -133,6 +133,9 @@ def download_one(
             language=track["lan"],
             language_doc=track["lan_doc"],
             is_ai=track["is_ai"],
+            author=meta.author,
+            url=url,
+            duration=page.duration or meta.duration,
             body=body,
         )
 

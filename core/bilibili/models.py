@@ -54,6 +54,9 @@ class SubtitleResult(BaseModel):
     language: str = ""
     language_doc: str = ""
     is_ai: bool = False
+    author: str = ""           # UP主/频道名
+    url: str = ""              # 视频链接
+    duration: float = 0.0      # 视频时长（秒）
     body: List[SubtitleItem]
 
 
