@@ -71,15 +71,20 @@ def _clean_summary_markdown(text: str) -> str:
     cleaned = []
     
     for line in lines:
-        # 1. 移除行首空格和制表符
+        # 1. 移除行首的 `> ` 引用标记（保留后面的空格作为列表缩进）
+        if line.startswith('> '):
+            line = line[2:]
+        elif line.startswith('>'):
+            line = line[1:]
+        
+        # 2. 只移除表格行的行首空格（防止表格被解析为代码块）
+        # 保留列表的缩进空格（如 `  - 子项`）
         stripped = line.lstrip(' \t')
+        if stripped.startswith('|') and line != stripped:
+            # 这一行是表格行且有行首空格 → 移除空格
+            line = stripped
         
-        # 2. 移除行首的 `> ` 引用标记
-        # 只移除行首的 `> `，保留表格行首的 `>|` 和真正的引用内容
-        if stripped.startswith('> ') and not stripped.startswith('>|'):
-            stripped = stripped[2:].lstrip(' \t')
-        
-        cleaned.append(stripped)
+        cleaned.append(line)
     
     # 3. 修复表格分隔线：识别连续表格块，在表头后插入分隔线
     result_lines = []
@@ -157,7 +162,10 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 2. **表格必须有分隔线**：每个表格必须在表头后紧跟分隔行 `|:---|:---|:---|`，列数与表头一致，使用 `:` 左对齐标记。
 3. **论证树用代码块包裹**：B1 论证拆解的树状结构必须放在 triple backtick (```) 代码块中，而不是纯文本缩进。
 4. **禁止用 `>` 引用块包裹章节**：不要在章节内容前加 `>`，引用块只用于真正的原文引用。
-5. **列表最多两级嵌套**：使用 `-` 作为一级列表，缩进两个空格后使用 `-` 作为二级列表，禁止更深嵌套。
+5. **列表最多两级嵌套，子项必须缩进两个空格**：
+   - 一级列表：`- 父项`
+   - 二级列表：`  - 子项`（前面必须有两个空格）
+   - 禁止三级及以上嵌套
 6. **标题格式**：`#` 后必须有一个空格，如 `## 标题`，不要写成 `##标题`。
 7. **分隔线统一使用 `---`**，前后各留一个空行。
 
@@ -323,23 +331,22 @@ def add_summary_to_file(filepath: Path, summary: str):
     """将深度分析添加到字幕文件（位于标题元数据之后、字幕内容之前）
     
     文件结构: [标题+元数据] + --- + [字幕内容]
-    插入后:   [标题+元数据] + --- + [> 分析] + [字幕内容]
+    插入后:   [标题+元数据] + --- + [## 深度分析 + 分析内容 + ---] + [字幕内容]
     """
     try:
         content = filepath.read_text(encoding="utf-8")
         parts = content.split("---", 1)  # 只分割一次，--- 是 markdown 分隔线
         
-        # 将多行简介转换为 Markdown 引用块格式
-        summary_lines = summary.split("\n")
-        summary_block = "\n".join(f"> {line}" for line in summary_lines if line.strip())
+        # 分析内容直接作为普通 Markdown 插入（不用 > 引用块，确保表格/列表正确渲染）
+        analysis_section = f"## 🔍 深度分析\n\n{summary}\n\n---"
         
         if len(parts) >= 2:
             header = parts[0].rstrip("\n")
             body = parts[1].lstrip("\n")
-            new_content = f"{header}\n\n---\n\n{summary_block}\n\n{body}"
+            new_content = f"{header}\n\n---\n\n{analysis_section}\n\n{body}"
         else:
             # 没有 --- 分隔线，直接在开头插入
-            new_content = f"{summary_block}\n\n{content}"
+            new_content = f"{analysis_section}\n\n{content}"
         
         filepath.write_text(new_content, encoding="utf-8")
         console.print(f"[green]✓[/green] 已添加简介: {filepath.name}")
