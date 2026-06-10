@@ -79,7 +79,13 @@ $env:DEEPSEEK_API_KEY = "your-api-key"
 $env:BILI_COOKIE = "your-sessdata"
 ```
 
-**方式二：修改 `config.py`**
+**方式二：复制配置文件模板**
+
+```bash
+cp config.example.py config.py
+```
+
+然后编辑 `config.py`，填入你的真实值：
 
 ```python
 # config.py
@@ -87,7 +93,7 @@ DEEPSEEK_API_KEY = "your-api-key"
 DEFAULT_SESSDATA = "your-sessdata"
 ```
 
-> ⚠️ 如果你把 `config.py` 上传到了公开仓库，**务必使用环境变量**，不要把真实密钥写死在代码里。
+> ⚠️ `config.py` 已被加入 `.gitignore`，不会被提交到 GitHub。请勿手动移除 `.gitignore` 中的 `config.py` 条目。
 
 ### 步骤四：配置输出目录（可选）
 

@@ -3,14 +3,14 @@ import os
 from pathlib import Path
 
 # DeepSeek API 配置
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")  # 填写你的 DeepSeek API Key
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-v4-pro"  # 深度分析用 Pro 模型
 DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"  # 翻译用 Flash 模型
 
 # Bilibili SESSDATA（锁定登录状态，无需每次手动输入）
 # 留空则每次启动时手动输入，或从环境变量读取
-DEFAULT_SESSDATA = ""
+DEFAULT_SESSDATA = ""  # 如需下载登录后才能看到的 B站字幕，填写 SESSDATA
 
 # 默认输出目录
 DEFAULT_OUTPUT_DIR = Path("E:/Obsidian/主仓库/11-subtitles")
