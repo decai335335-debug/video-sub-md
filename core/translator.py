@@ -236,20 +236,59 @@ def merge_translation_to_bilingual(
     return '\n'.join(bilingual_lines).rstrip('\n')
 
 
-def add_translation_to_file(filepath: Path, translation: str):
-    """将翻译追加到字幕文件末尾（在 YAML frontmatter 之后）"""
+def add_translation_to_file(filepath: Path, translation: str, original_subtitle: str = None):
+    """将翻译合并到字幕文件中，保留已有的深度分析内容
+    
+    参数:
+        filepath: 字幕文件路径
+        translation: 纯译文（不含空行，行数=原文非空行数）
+        original_subtitle: 原始字幕内容（不含标题元数据）。
+                          如果提供了此参数，将用它来生成双语字幕，
+                          避免文件中已有的分析内容干扰对齐。
+    """
     try:
         content = filepath.read_text(encoding="utf-8")
-        parts = content.split("---", 2)
+        # 文件结构: [标题+元数据] --- [内容（可能包含分析+字幕）]
+        parts = content.split("---", 1)
         
-        bilingual = merge_translation_to_bilingual(parts[2] if len(parts) >= 3 else content, translation)
-        translation_section = f"\n---\n\n## 📝 双语字幕\n\n{bilingual}"
-        
-        if len(parts) >= 3:
-            frontmatter = parts[0] + "---" + parts[1] + "---"
-            new_content = frontmatter + translation_section
+        if len(parts) >= 2:
+            header = parts[0].rstrip("\n")
+            # 确保 header 和 --- 之间有一个空行
+            if not header.endswith("\n"):
+                header += "\n"
+            body = parts[1].lstrip("\n")
+            body_lines = body.split('\n')
+            
+            # 分离分析内容（以 "> " 开头的行）和字幕内容
+            analysis_lines = []
+            subtitle_start_idx = 0
+            for i, line in enumerate(body_lines):
+                stripped = line.strip()
+                if stripped.startswith('> '):
+                    analysis_lines.append(line)
+                    subtitle_start_idx = i + 1
+                elif stripped == '' and subtitle_start_idx > 0:
+                    # 分析内容后的空行，继续收集
+                    subtitle_start_idx = i + 1
+                elif subtitle_start_idx > 0 and stripped and not stripped.startswith('> '):
+                    # 遇到第一个非分析行，停止收集
+                    break
+            
+            analysis_text = '\n'.join(analysis_lines).rstrip('\n')
+            subtitle_text = '\n'.join(body_lines[subtitle_start_idx:])
+            
+            # 用原始字幕生成双语字幕
+            source = original_subtitle if original_subtitle else subtitle_text
+            bilingual = merge_translation_to_bilingual(source, translation)
+            
+            if analysis_text:
+                new_content = f"{header}---\n\n{analysis_text}\n\n{bilingual}"
+            else:
+                new_content = f"{header}---\n\n{bilingual}"
         else:
-            new_content = content.rstrip("\n") + translation_section
+            source = original_subtitle if original_subtitle else content
+            bilingual = merge_translation_to_bilingual(source, translation)
+            new_content = bilingual
         
         filepath.write_text(new_content, encoding="utf-8")
         print(f"✓ 已添加翻译: {filepath.name}")
