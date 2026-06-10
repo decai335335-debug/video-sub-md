@@ -43,6 +43,93 @@ except ImportError:
     add_translation_to_file = None
 
 
+def _clean_summary_markdown(text: str) -> str:
+    """清洗 AI 输出的 Markdown，修复常见格式问题以确保正确渲染
+    
+    修复项目：
+    1. 移除行首空格（防止表格被解析为代码块）
+    2. 移除行首的 `> ` 引用标记（防止内容被包裹在引用块中）
+    3. 修复表格分隔线：确保每个表格都有正确的 |:---| 分隔行
+    4. 清理多余的空行
+    """
+    import re
+    
+    def _is_table_separator(line: str) -> bool:
+        """检查行是否是表格分隔线（如 |:---|:---| ）"""
+        stripped = line.strip()
+        if '|' not in stripped:
+            return False
+        # 分隔线只包含 |、-、: 和空格
+        content = stripped.replace('|', '').replace('-', '').replace(':', '').strip()
+        return len(content) == 0
+    
+    def _is_table_row(line: str) -> bool:
+        """检查行是否是表格数据/表头行（包含 | 且不是分隔线）"""
+        return '|' in line and not _is_table_separator(line)
+    
+    lines = text.split('\n')
+    cleaned = []
+    
+    for line in lines:
+        # 1. 移除行首空格和制表符
+        stripped = line.lstrip(' \t')
+        
+        # 2. 移除行首的 `> ` 引用标记
+        # 只移除行首的 `> `，保留表格行首的 `>|` 和真正的引用内容
+        if stripped.startswith('> ') and not stripped.startswith('>|'):
+            stripped = stripped[2:].lstrip(' \t')
+        
+        cleaned.append(stripped)
+    
+    # 3. 修复表格分隔线：识别连续表格块，在表头后插入分隔线
+    result_lines = []
+    i = 0
+    while i < len(cleaned):
+        line = cleaned[i]
+        
+        if _is_table_row(line):
+            # 找到连续的表格行块
+            table_block = [line]
+            j = i + 1
+            while j < len(cleaned) and (_is_table_row(cleaned[j]) or _is_table_separator(cleaned[j])):
+                table_block.append(cleaned[j])
+                j += 1
+            
+            # 检查第二行是否是分隔线，如果不是则在第一行后插入
+            if len(table_block) >= 2:
+                if not _is_table_separator(table_block[1]):
+                    cols = line.count('|') - 1
+                    if cols > 0:
+                        sep = '|' + ':---|' * cols
+                        table_block.insert(1, sep)
+            elif len(table_block) == 1:
+                # 只有一行表格，也插入分隔线
+                cols = line.count('|') - 1
+                if cols > 0:
+                    sep = '|' + ':---|' * cols
+                    table_block.append(sep)
+            
+            result_lines.extend(table_block)
+            i = j
+        else:
+            result_lines.append(line)
+            i += 1
+    
+    # 4. 清理多余空行（最多连续两个空行）
+    final_lines = []
+    empty_count = 0
+    for line in result_lines:
+        if line.strip() == '':
+            empty_count += 1
+            if empty_count <= 2:
+                final_lines.append(line)
+        else:
+            empty_count = 0
+            final_lines.append(line)
+    
+    return '\n'.join(final_lines).strip()
+
+
 def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "") -> Optional[str]:
     """调用 DeepSeek API 为字幕内容生成深度分析"""
     if not DEEPSEEK_API_KEY:
@@ -61,6 +148,18 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 2. **禁止编造**。如果字幕未提供某信息，明确标注 **[信息不足]**，不得补全。
 3. **引用原文时必须使用引号**，不得改写、润色或概括后冒充原文。
 4. **数量不强制**：以下分析中，若内容本身不足，允许输出"无"或"仅1项"，禁止为凑数而拆分或编造。
+
+## 📝 格式规范锁（渲染安全，不可违反）
+
+以下规则直接影响 Markdown 渲染效果，必须严格遵守：
+
+1. **禁止行首空格**：任何行的第一个字符不能是空格。行首空格会导致表格被渲染为代码块。
+2. **表格必须有分隔线**：每个表格必须在表头后紧跟分隔行 `|:---|:---|:---|`，列数与表头一致，使用 `:` 左对齐标记。
+3. **论证树用代码块包裹**：B1 论证拆解的树状结构必须放在 triple backtick (```) 代码块中，而不是纯文本缩进。
+4. **禁止用 `>` 引用块包裹章节**：不要在章节内容前加 `>`，引用块只用于真正的原文引用。
+5. **列表最多两级嵌套**：使用 `-` 作为一级列表，缩进两个空格后使用 `-` 作为二级列表，禁止更深嵌套。
+6. **标题格式**：`#` 后必须有一个空格，如 `## 标题`，不要写成 `##标题`。
+7. **分隔线统一使用 `---`**，前后各留一个空行。
 
 ---
 
@@ -151,8 +250,9 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 ### 若识别为【观点型】（表达立场/说服受众/评论分析）→ 激活插件B
 
 #### B1 论证拆解（Argument Tree）
-以缩进文本树输出：
+用 triple backtick 代码块包裹缩进文本树：
 
+```
 核心主张：[一句话]
 ├── 论据A：[描述]
 │   ├── 支撑A1：[事实/数据] — 可信度：[A/B/C]
@@ -160,6 +260,7 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 ├── 论据B：[描述]
 │   └── 支撑B1：[...]
 └── 🔴 隐含前提X：[未明说但必须成立的前提] ← 论证最脆弱点
+```
 
 #### B2 修辞与说服分析
 提取所有可辨识的策略，格式：
@@ -211,6 +312,7 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
             console.print("[yellow]警告: API 输出达到长度限制，分析内容可能不完整[/yellow]")
         
         summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        summary = _clean_summary_markdown(summary)
         return summary if summary else None
     except Exception as e:
         console.print(f"[red]调用 DeepSeek API 失败: {e}[/red]")
