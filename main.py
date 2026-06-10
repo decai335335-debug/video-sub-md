@@ -27,11 +27,20 @@ from config import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_API_URL,
     DEEPSEEK_MODEL,
+    DEEPSEEK_FLASH_MODEL,
 )
 from models import DownloadResult, BatchReport
 
 console = Console(force_terminal=True)
 app = typer.Typer(add_completion=False)
+
+# 导入翻译模块
+try:
+    from core.translator import translate_subtitle_with_deepseek, add_translation_to_file
+except ImportError:
+    console.print("[yellow]警告: 无法导入 core.translator 模块，翻译功能将不可用[/yellow]")
+    translate_subtitle_with_deepseek = None
+    add_translation_to_file = None
 
 
 def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "") -> Optional[str]:
@@ -402,29 +411,76 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     # 询问是否生成分析
     if success_results and DEEPSEEK_API_KEY:
         console.print()
-        choice = input("是否为下载的字幕生成深度分析？(a 是 / b 否): ").strip().lower()
-        if choice == "a":
-            console.print("\n[dim]正在生成深度分析...[/dim]")
+        choice_analysis = input("是否为下载的字幕生成深度分析？(a 是 / b 否): ").strip().lower()
+        
+        # 只有翻译模块可用时才询问翻译
+        if translate_subtitle_with_deepseek:
+            choice_translate = input("是否为下载的字幕生成翻译？(a 是 / b 否): ").strip().lower()
+        else:
+            choice_translate = "b"
+            console.print("[dim]提示: 翻译模块不可用，已跳过翻译选项[/dim]")
+        
+        do_analysis = choice_analysis == "a"
+        do_translate = choice_translate == "a"
+        
+        if do_analysis or do_translate:
+            console.print()
+            if do_analysis:
+                console.print("[dim]正在生成深度分析 (Pro)...[/dim]")
+            if do_translate:
+                console.print("[dim]正在生成翻译 (Flash)...[/dim]")
+            
             for r in success_results:
                 if r.filepath and r.filepath.exists():
                     try:
-                        content = r.filepath.read_text(encoding="utf-8")
-                        summary = generate_summary_with_deepseek(content, r.title or "")
-                        if summary:
-                            add_summary_to_file(r.filepath, summary)
-                            console.print(f"[dim]  已处理: {r.filepath.name}[/dim]")
-                        else:
-                            console.print(f"[yellow]  跳过（未生成分析）: {r.filepath.name}[/yellow]")
+                        # 保存原始文件内容（在添加分析之前）
+                        original_file_content = r.filepath.read_text(encoding="utf-8")
+                        
+                        # 提取纯字幕内容用于翻译（去除 frontmatter）
+                        subtitle_content = original_file_content
+                        content_normalized = original_file_content.replace('\r\n', '\n').replace('\r', '\n')
+                        positions = [m.start() for m in re.finditer('---', content_normalized)]
+                        if len(positions) >= 2:
+                            # 有 frontmatter 和字幕结束标记
+                            subtitle_content = content_normalized[positions[0] + 3:positions[1]].strip()
+                        elif len(positions) == 1:
+                            # 只有一个 ---（frontmatter结束标记）
+                            subtitle_content = content_normalized[positions[0] + 3:].strip()
+                        
+                        if do_analysis:
+                            summary = generate_summary_with_deepseek(original_file_content, r.title or "")
+                            if summary:
+                                add_summary_to_file(r.filepath, summary)
+                                console.print(f"[dim]  ✓ 分析完成: {r.filepath.name}[/dim]")
+                            else:
+                                console.print(f"[yellow]  ✗ 分析失败: {r.filepath.name}[/yellow]")
+                        
+                        if do_translate and translate_subtitle_with_deepseek:
+                            # 使用提取的纯字幕内容翻译，而不是整个文件内容
+                            translation = translate_subtitle_with_deepseek(
+                                subtitle_content, 
+                                video_title=r.title or "",
+                                api_key=DEEPSEEK_API_KEY,
+                                api_url=DEEPSEEK_API_URL,
+                                model=DEEPSEEK_FLASH_MODEL
+                            )
+                            if translation:
+                                add_translation_to_file(r.filepath, translation)
+                                console.print(f"[dim]  ✓ 翻译完成: {r.filepath.name}[/dim]")
+                            else:
+                                console.print(f"[yellow]  ✗ 翻译失败: {r.filepath.name}[/yellow]")
                     except Exception as e:
                         console.print(f"[red]  处理失败: {r.filepath.name} - {e}[/red]")
-            console.print("[dim]分析生成完成[/dim]")
-        elif choice == "b":
-            console.print("[dim]已跳过分析生成[/dim]")
+            
+            if do_analysis:
+                console.print("[dim]深度分析完成[/dim]")
+            if do_translate:
+                console.print("[dim]翻译完成[/dim]")
         else:
-            console.print("[yellow]无效选择，已跳过分析生成[/yellow]")
+            console.print("[dim]已跳过分析生成[/dim]")
     elif success_results and not DEEPSEEK_API_KEY:
         console.print()
-        console.print("[dim]提示: 未设置 DEEPSEEK_API_KEY 环境变量，如需生成分析请先设置[/dim]")
+        console.print("[dim]提示: 未设置 DEEPSEEK_API_KEY 环境变量，如需生成分析或翻译请先设置[/dim]")
 
     return report
 
