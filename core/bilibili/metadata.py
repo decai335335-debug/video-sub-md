@@ -18,6 +18,7 @@ from config import (
     RETRY_DELAY,
 )
 from core.bilibili.models import VideoMeta, VideoPage
+from core.bilibili.wbi_sign import sign_params
 
 
 # 全局 cookie，由主程序设置
@@ -55,7 +56,11 @@ def set_debug(enabled: bool) -> None:
 
 def _debug(msg: str) -> None:
     if _debug_mode:
-        print(f"[debug] {msg}")
+        try:
+            print(f"[debug] {msg}")
+        except UnicodeEncodeError:
+            # Windows 控制台编码不支持时回退到 ascii
+            print(f"[debug] {msg.encode('ascii', 'replace').decode('ascii')}")
 
 
 def _get_json(url: str, params: Optional[dict] = None) -> dict:
@@ -117,13 +122,13 @@ def fetch_video_meta(bvid: str) -> VideoMeta:
 
 def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
     """获取视频可用字幕轨道列表。"""
-    # 优先使用 wbi/v2 接口
+    # 优先使用 wbi/v2 接口；B站核心接口已启用 WBI 签名
     urls_to_try = []
     if aid:
         urls_to_try.append(
             (
                 BILI_PLAYER_WBI_API,
-                {"aid": aid, "cid": cid, "bvid": bvid},
+                sign_params({"aid": str(aid), "cid": str(cid), "bvid": bvid}),
             )
         )
     urls_to_try.append(
@@ -158,8 +163,9 @@ def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
                 _debug(f"  track[{i}]: lan={s.get('lan')} doc={s.get('lan_doc')} url={s.get('subtitle_url', '')[:60]}...")
 
             # 如果 subtitles 为空，检查是否有 allow_submit 等字段
+            need_login = data.get("need_login_subtitle", False)
             if not subtitles:
-                _debug(f"⚠️ subtitles 为空! subtitle_obj={subtitle_obj}")
+                _debug(f"subtitles 为空! need_login_subtitle={need_login} subtitle_obj={subtitle_obj}")
                 # 某些视频字幕在 view API 中，尝试从 view API 获取
                 try:
                     view_payload = _get_json(BILI_VIEW_API, {"bvid": bvid})
@@ -174,6 +180,10 @@ def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
                 except Exception as e:
                     _debug(f"view API 字幕获取失败: {e}")
 
+            # 如果最终没有可用轨道且接口提示需要登录，给出明确错误
+            if not subtitles and need_login:
+                raise RuntimeError("该视频字幕需要登录后才能查看，请提供有效的 B站 SESSDATA Cookie")
+
             tracks = []
             for item in subtitles:
                 url_str = item.get("subtitle_url") or ""
@@ -181,6 +191,11 @@ def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
                     url_str = f"https:{url_str}"
                 elif url_str and not url_str.startswith(("http://", "https://")):
                     url_str = f"https://{url_str.lstrip('/')}"
+
+                # 跳过没有实际字幕文件地址的轨道
+                if not url_str:
+                    _debug(f"跳过无 subtitle_url 的字幕轨道: {item}")
+                    continue
 
                 lan = str(item.get("lan") or "").lower()
                 tracks.append(

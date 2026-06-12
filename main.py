@@ -28,6 +28,7 @@ from config import (
     DEEPSEEK_API_URL,
     DEEPSEEK_MODEL,
     DEEPSEEK_FLASH_MODEL,
+    DEFAULT_SESSDATA,
 )
 from models import DownloadResult, BatchReport
 
@@ -368,6 +369,13 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
         response.raise_for_status()
         result = response.json()
         
+        # 打印 token 消耗
+        usage = result.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", 0)
+        console.print(f"[dim]分析 Token: 提示词 {prompt_tokens} / 生成 {completion_tokens} / 总计 {total_tokens}[/dim]")
+        
         # 检查是否因长度被截断
         finish_reason = result.get("choices", [{}])[0].get("finish_reason", "")
         if finish_reason == "length":
@@ -678,9 +686,20 @@ def download(
     ))
 
     # 优先命令行参数，其次环境变量，最后配置文件中的默认值
-    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or config.DEFAULT_SESSDATA or ""
+    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or DEFAULT_SESSDATA or ""
 
     from core.bilibili.metadata import set_cookie
+
+    def _check_cookie_validity(cookie_value: str) -> bool:
+        """检查 SESSDATA 是否能让 B站识别为登录状态。"""
+        if not cookie_value:
+            return False
+        try:
+            from core.bilibili.metadata import _get_json
+            nav = _get_json("https://api.bilibili.com/x/web-interface/nav")
+            return bool(nav.get("data", {}).get("isLogin"))
+        except Exception:
+            return False
 
     # Cookie 设置与提示
     if effective_cookie:
@@ -694,6 +713,11 @@ def download(
             console.print(f"[yellow]警告: Cookie 过滤后长度从 {raw_len} 变为 {clean_len}，部分字符被移除[/yellow]")
         else:
             console.print(f"[dim]已设置登录 Cookie (原始 {raw_len} 字符, 有效 {clean_len} 字符)[/dim]")
+
+        # 校验 Cookie 是否有效
+        if not _check_cookie_validity(effective_cookie):
+            console.print("[yellow]警告: 当前 Cookie 未通过 B站登录校验，部分需要登录的字幕（含大部分 AI 生成字幕）可能无法获取[/yellow]")
+            console.print("[dim]提示: 请从浏览器开发者工具复制最新的 SESSDATA 值，或设置 BILI_COOKIE 环境变量[/dim]")
     else:
         console.print("[dim]提示：如需下载登录后才能看到的字幕，请输入 SESSDATA（直接回车则以游客身份运行）：[/dim]")
         user_cookie = input("  SESSDATA> ").strip()

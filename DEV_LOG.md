@@ -72,7 +72,19 @@
 | 2026-06-10 | 编号解析后处理 | 解析 `[编号] 译文` 格式提取纯译文，过滤多余空行和废话 |
 | 2026-06-10 | Prompt 强化 | 明确告知 AI "输入 N 行 = 输出 N 行"，禁止换行拆分 |
 
-### v0.5.3 —— AI 分析格式精细化修复（当前）
+### v0.5.4 —— B站字幕接口修复 + Cookie 校验增强（当前）
+
+| 日期 | 功能 | 说明 |
+|------|------|------|
+| 2026-06-12 | WBI 签名应用 | `core/bilibili/metadata.py` 的 `fetch_subtitle_tracks()` 正式调用 `wbi_sign.sign_params()`，修复部分 B站视频因缺少签名而拿不到字幕的问题 |
+| 2026-06-12 | Cookie 登录校验 | 启动时调用 `x/web-interface/nav` 校验 `SESSDATA` 是否有效，无效时明确提示用户 |
+| 2026-06-12 | 需要登录字幕检测 | 接口返回 `need_login_subtitle=true` 时，明确报错“需要登录后才能查看”，替代模糊的“暂无可用字幕” |
+| 2026-06-12 | 空 subtitle_url 过滤 | 跳过 API 返回的无实际地址字幕轨道，避免 `Invalid URL ''` 崩溃 |
+| 2026-06-12 | config 引用修复 | 修复 `main.py` 引用未导入的 `config.DEFAULT_SESSDATA` 的潜在 NameError |
+| 2026-06-12 | 调试输出 Unicode 兼容 | `_debug()` 增加 UnicodeEncodeError 回退，避免 Windows GBK 控制台打印 emoji 时崩溃 |
+| 2026-06-12 | Token 消耗显示 | AI 分析和翻译完成后输出 `prompt_tokens` / `completion_tokens` / `total_tokens`，方便用户统计 API 用量 |
+
+### v0.5.3 —— AI 分析格式精细化修复
 
 | 日期 | 功能 | 说明 |
 |------|------|------|
@@ -196,6 +208,16 @@
 | **涉及版本** | v0.5.0 |
 | **误判成本** | 最初怀疑是 VS Code 更新导致 OSC 8 超链接失效（浪费 30 分钟），后怀疑是 `Path.relative_to()` 问题（浪费 15 分钟），最终通过"Bilibili 能点、YouTube 不能点"的对比发现是数据差异（`#` 字符） |
 
+### 坑 11：BILI_COOKIE 环境变量覆盖 config.py（严重）
+
+| 项目 | 内容 |
+|------|------|
+| **问题** | 用户已更新 `config.py` 中的 `DEFAULT_SESSDATA`，但工具仍使用旧 Cookie，提示“未通过 B站登录校验”，B站字幕全部下载失败 |
+| **根因** | 代码读取优先级为：`--cookie` > `BILI_COOKIE` 环境变量 > `BILIBILI_SESSDATA` 环境变量 > `config.py`。用户使用的第三方启动器菜单在启动终端时带入了缓存的旧 `BILI_COOKIE`，导致 `config.py` 被覆盖 |
+| **解决方案** | ① 删除系统/用户环境变量中的 `BILI_COOKIE` ② 在启动器 BAT 中加入 `set "BILI_COOKIE="` 清空当前进程的环境变量 ③ 提供 `run.ps1` / `run.cmd` 作为兜底启动方式，自动清空 `BILI_COOKIE` |
+| **涉及版本** | v0.5.4 |
+| **5Why 根因** | 为什么 config.py 不生效？→ 因为环境变量优先级更高。为什么启动器会带旧环境变量？→ 因为启动器进程或其父进程在启动时继承了旧的 `BILI_COOKIE`。为什么旧值还在？→ 因为用户虽然改了系统环境变量，但已运行的启动器进程不会自动刷新环境变量。系统级根因：环境变量具有进程继承性，运行中的进程不会监听注册表变化 |
+
 ### 坑 10：config.py 敏感信息误提交
 
 | 项目 | 内容 |
@@ -267,7 +289,16 @@
 | 传入 `original_subtitle` 参数 | ✅ 采用 | 在添加分析之前保存原始字幕内容，翻译时用这个纯内容做 source，不受后续分析内容干扰 |
 | 在文件中插入 HTML 标记分隔 | ❌ 放弃 | 引入 `<!-- SUBTITLE_START -->` 等标记会增加文件复杂度，用户可能不喜欢 |
 
-### 决策 8：配置安全策略
+### 决策 8：启动器环境变量覆盖问题
+
+| 选项 | 决策 | 理由 |
+|------|------|------|
+| ~~降低环境变量优先级，让 config.py 优先~~ | ❌ 放弃 | 会破坏既有用户习惯和 README 文档约定，且环境变量在纯命令行场景下确实更安全 |
+| ~~移除环境变量支持~~ | ❌ 放弃 | 会损失灵活性，部分用户依赖 CI/脚本注入 Cookie |
+| 保持现有优先级 + 提供启动脚本清空 `BILI_COOKIE` | ✅ 采用 | 不破坏兼容性；为使用第三方启动器的用户提供 `run.ps1` / `run.cmd` 兜底方案；在启动器 BAT 中显式 `set "BILI_COOKIE="` 是局部、低侵入的修复 |
+| 增加启动时 Cookie 有效性检测 | ✅ 采用 | 让用户第一时间知道当前生效的 Cookie 是否有效，减少“为什么有字幕却下载失败”的困惑 |
+
+### 决策 9：配置安全策略
 
 | 选项 | 决策 | 理由 |
 |------|------|------|
@@ -324,6 +355,8 @@ video-sub-md/
 ├── config.example.py          # 配置模板（空占位符，可安全提交）
 ├── models.py                  # 通用数据模型
 ├── requirements.txt           # 依赖声明
+├── run.ps1                    # PowerShell 启动脚本（清空 BILI_COOKIE，强制使用 config.py）
+├── run.cmd                    # CMD 启动脚本（清空 BILI_COOKIE，强制使用 config.py）
 ├── README.md                  # 用户文档
 ├── DEV_LOG.md                 # 开发日志（本文档）
 │

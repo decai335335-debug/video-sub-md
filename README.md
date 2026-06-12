@@ -52,9 +52,10 @@
 | **双语字幕翻译** | 下载完成后可选择生成英中双语字幕（原文 + `> 中文译文`），解决英文字幕阅读障碍 |
 | **分析与翻译共存** | 先分析后翻译时，分析引用块和双语字幕互不干扰，不会出现分析内容"吃掉"译文的问题 |
 | **Frontmatter 持久保留** | 翻译后的文件始终保留标题、频道、链接、时长、提取时间等元数据 |
-| **分层模型策略** | 深度分析用 Pro 模型（质量高），翻译用 Flash 模型（速度快），按需调用不浪费 |
+| **分层模型策略** | 深度分析用 Pro 模型（质量高），翻译用 Flash 模型（速度快），按需调用不浪费；均可在 `config.py` 中切换 |
 | **CSV 报告** | 每次下载自动生成带时间戳的 CSV 报告，方便追溯 |
-| **Cookie 自动注入** | 自动读取环境变量，下载需要登录的 B站字幕 |
+| **Token 消耗显示** | 每次 AI 分析/翻译后输出提示词/生成/总计 Token 数，方便统计用量 |
+| **Cookie 自动注入** | 自动读取 `config.py` 或环境变量，下载需要登录的 B站字幕；启动时自动校验 Cookie 是否有效 |
 
 ---
 
@@ -75,17 +76,7 @@ pip install -r requirements.txt
 
 ### 步骤三：配置 API 密钥和 Cookie
 
-**方式一：环境变量（推荐，安全）**
-
-```bash
-# DeepSeek API Key
-$env:DEEPSEEK_API_KEY = "your-api-key"
-
-# Bilibili SESSDATA（如需下载登录后才能看到的字幕）
-$env:BILI_COOKIE = "your-sessdata"
-```
-
-**方式二：复制配置文件模板**
+**方式一：复制配置文件模板（推荐，最不容易被启动器/终端缓存覆盖）**
 
 ```bash
 cp config.example.py config.py
@@ -100,6 +91,18 @@ DEFAULT_SESSDATA = "your-sessdata"
 ```
 
 > ⚠️ `config.py` 已被加入 `.gitignore`，不会被提交到 GitHub。请勿手动移除 `.gitignore` 中的 `config.py` 条目。
+
+**方式二：环境变量**
+
+```bash
+# DeepSeek API Key
+$env:DEEPSEEK_API_KEY = "your-api-key"
+
+# Bilibili SESSDATA（如需下载登录后才能看到的字幕）
+$env:BILI_COOKIE = "your-sessdata"
+```
+
+> 注意：如果你使用第三方启动器/菜单打开本工具，启动器可能自带缓存的 `BILI_COOKIE` 环境变量，导致 `config.py` 中的值被覆盖。此时建议改用 `config.py` 配置，或使用项目根目录的 `run.ps1` / `run.cmd` 启动（会自动清空 `BILI_COOKIE`）。
 
 ### 步骤四：配置输出目录（可选）
 
@@ -217,6 +220,8 @@ video-sub-md/
 ├── config.example.py    # 配置模板（复制为 config.py 后填入真实值）
 ├── models.py            # 通用数据模型（DownloadResult、BatchReport）
 ├── requirements.txt     # 依赖列表
+├── run.ps1              # PowerShell 启动脚本（自动清空 BILI_COOKIE，强制使用 config.py）
+├── run.cmd              # CMD 启动脚本（自动清空 BILI_COOKIE，强制使用 config.py）
 ├── README.md            # 用户文档
 ├── DEV_LOG.md           # 开发日志（迭代历史、踩坑记录、设计决策）
 └── core/
@@ -245,7 +250,19 @@ video-sub-md/
 A: 大概率是 Cookie 未设置或已过期。请重新获取 SESSDATA：
 1. 用浏览器打开 `https://www.bilibili.com` 并登录
 2. 按 **F12** → **Application** → **Cookies** → `https://www.bilibili.com`
-3. 找到 `SESSDATA`，复制值到环境变量 `$env:BILI_COOKIE` 或 `config.py`
+3. 找到 `SESSDATA`，复制值到 `config.py` 的 `DEFAULT_SESSDATA`
+4. 如果你使用第三方启动器，启动器可能缓存了旧的 `BILI_COOKIE`，请改用项目根目录的 `run.ps1` / `run.cmd` 启动
+
+**Q: 启动时提示"当前 Cookie 未通过 B站登录校验"？**
+
+A: 说明当前使用的 SESSDATA 已失效。请按上一问重新获取最新 SESSDATA 并更新到 `config.py`。如果确认 `config.py` 已更新但仍报警告，说明环境变量 `BILI_COOKIE` 覆盖了 `config.py`，请删除该环境变量或使用 `run.ps1` / `run.cmd` 启动。
+
+**Q: 为什么命令行带 `--cookie` 可以，从启动器打开不行？**
+
+A: `--cookie` 参数优先级最高，会覆盖所有其他配置。启动器打开时可能带入了旧的 `BILI_COOKIE` 环境变量，导致读到过期 Cookie。解决方法：
+1. 删除系统/用户环境变量中的 `BILI_COOKIE`
+2. 只用 `config.py` 管理 Cookie
+3. 或使用项目自带的 `run.ps1` / `run.cmd` 启动（会自动清空环境变量中的 `BILI_COOKIE`）
 
 **Q: YouTube 显示 IP 被封锁或请求超时？**
 
@@ -287,7 +304,7 @@ A: 程序会自动删除 Windows 文件名保留字符（`\/:*?"<>|`），并将
 
 ## 9. 未来开发路线图
 
-### 当前状态：稳定版（v0.5.3）
+### 当前状态：稳定版（v0.5.4）
 
 ### 近期（下个版本 v0.6.0）
 
@@ -320,6 +337,14 @@ A: 程序会自动删除 Windows 文件名保留字符（`\/:*?"<>|`），并将
 ---
 
 ## 10. 更新日志
+
+### v0.5.4 (2026-06-12)
+- 🔧 修复 B站字幕接口 WBI 签名未应用的问题（`wbi_sign.py` 已存在但未被调用，导致部分视频无法获取字幕）
+- 🔧 修复 `main.py` 中 `config.DEFAULT_SESSDATA` 引用错误（未 import config 模块）
+- 🔧 修复空 `subtitle_url` 导致的 `Invalid URL` 崩溃
+- ✅ 新增启动时 Cookie 登录状态校验，无效 Cookie 会明确提示
+- ✅ 新增 `need_login_subtitle` 检测，需要登录的字幕会给出清晰错误信息而非“暂无可用字幕”
+- ⚡ 优化调试输出 `_debug()`，Windows GBK 控制台下遇到 Unicode 字符自动降级为 ASCII
 
 ### v0.5.3
 - **修复** AI 分析标题层级倒序：Prompt 要求 AI 直接从 `###` 开始，避免与 `## 🔍 深度分析` 并列

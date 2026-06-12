@@ -147,6 +147,13 @@ def translate_subtitle_with_deepseek(
                 response.raise_for_status()
                 result = response.json()
                 
+                # 打印 token 消耗
+                usage = result.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+                print(f"  第 {chunk_num} 段 Token: 提示词 {prompt_tokens} / 生成 {completion_tokens} / 总计 {total_tokens}")
+                
                 finish_reason = result.get("choices", [{}])[0].get("finish_reason", "")
                 if finish_reason == "length":
                     print(f"  警告: 第 {chunk_num} 段翻译可能被截断")
