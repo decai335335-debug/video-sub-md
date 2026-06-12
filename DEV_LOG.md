@@ -81,8 +81,11 @@
 | 2026-06-12 | 需要登录字幕检测 | 接口返回 `need_login_subtitle=true` 时，明确报错“需要登录后才能查看”，替代模糊的“暂无可用字幕” |
 | 2026-06-12 | 空 subtitle_url 过滤 | 跳过 API 返回的无实际地址字幕轨道，避免 `Invalid URL ''` 崩溃 |
 | 2026-06-12 | config 引用修复 | 修复 `main.py` 引用未导入的 `config.DEFAULT_SESSDATA` 的潜在 NameError |
-| 2026-06-12 | 调试输出 Unicode 兼容 | `_debug()` 增加 UnicodeEncodeError 回退，避免 Windows GBK 控制台打印 emoji 时崩溃 |
+| 2026-06-12 | 本地大模型支持 | 新增 `core/local_llm.py`，基于 transformers 加载本地 Qwen3 模型；`main.py` 和 `translator.py` 均支持按 0/1 切换本地/API 模式 |
 | 2026-06-12 | Token 消耗显示 | AI 分析和翻译完成后输出 `prompt_tokens` / `completion_tokens` / `total_tokens`，方便用户统计 API 用量 |
+| 2026-06-12 | 调试输出 Unicode 兼容 | `_debug()` 增加 UnicodeEncodeError 回退，避免 Windows GBK 控制台打印 emoji 时崩溃 |
+| 2026-06-12 | 先分析后翻译覆盖分析内容修复 | `add_summary_to_file()` 写入 `<!-- SUBTITLE_START -->` 标记明确分隔分析区和字幕区；`_split_file_sections()` 优先按标记解析，回退时再按 `## 🔍 深度分析` 定位。彻底解决分析区内含 `---` 分隔线时被误截断的问题 |
+| 2026-06-12 | 字幕体空行误判修复 | `_split_file_sections()` 回退路径中 `after_frontmatter.find(analysis_heading)` 返回 `-1` 时，原代码 `-1 < 200` 被误判为 `True`，导致无分析的文件被当作有分析，字幕体被识别为空。修复为 `heading_pos != -1 and heading_pos < 200` |
 
 ### v0.5.3 —— AI 分析格式精细化修复
 
@@ -289,7 +292,17 @@
 | 传入 `original_subtitle` 参数 | ✅ 采用 | 在添加分析之前保存原始字幕内容，翻译时用这个纯内容做 source，不受后续分析内容干扰 |
 | 在文件中插入 HTML 标记分隔 | ❌ 放弃 | 引入 `<!-- SUBTITLE_START -->` 等标记会增加文件复杂度，用户可能不喜欢 |
 
-### 决策 8：启动器环境变量覆盖问题
+### 决策 8：本地模型 vs API
+
+| 选项 | 决策 | 理由 |
+|------|------|------|
+| ~~只支持 DeepSeek API~~ | ❌ 放弃 | API 有额度和网络依赖，长期使用成本高 |
+| ~~本地模型完全替代 API~~ | ❌ 放弃 | 本地 1.7B 模型质量不如 DeepSeek V4 Pro，需保留 API 作为高质量备选 |
+| 启动时按 0/1 切换本地/API | ✅ 采用 | 默认本地模型省钱，需要高质量分析时一键切 API；翻译和分析统一走同一模式，逻辑简单 |
+| transformers 懒加载 + 单例 | ✅ 采用 | 模型加载慢（约 5-20 秒）、占显存大，首次调用时加载并复用，避免重复开销 |
+| Qwen3 `/no_think` 关闭推理 | ✅ 采用 | Qwen3 默认输出 `<think>` 推理块，会污染分析和翻译结果；追加 `/no_think` 获得直接回答 |
+
+### 决策 9：启动器环境变量覆盖问题
 
 | 选项 | 决策 | 理由 |
 |------|------|------|
@@ -298,7 +311,7 @@
 | 保持现有优先级 + 提供启动脚本清空 `BILI_COOKIE` | ✅ 采用 | 不破坏兼容性；为使用第三方启动器的用户提供 `run.ps1` / `run.cmd` 兜底方案；在启动器 BAT 中显式 `set "BILI_COOKIE="` 是局部、低侵入的修复 |
 | 增加启动时 Cookie 有效性检测 | ✅ 采用 | 让用户第一时间知道当前生效的 Cookie 是否有效，减少“为什么有字幕却下载失败”的困惑 |
 
-### 决策 9：配置安全策略
+### 决策 10：配置安全策略
 
 | 选项 | 决策 | 理由 |
 |------|------|------|

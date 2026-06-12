@@ -8,6 +8,13 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-v4-pro"  # 深度分析用 Pro 模型
 DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"  # 翻译用 Flash 模型
 
+# 本地大模型配置（可选）
+# 填写本地 transformers 模型目录路径，如 Qwen3-1.7B
+LOCAL_MODEL_PATH = r""
+# AI 模式："local" 使用本地模型，"api" 使用 DeepSeek API
+# 程序启动时会询问：按 0 = 本地模型，按 1 = API；直接回车 = 使用此默认值
+DEFAULT_AI_MODE = "local"
+
 # Bilibili SESSDATA（锁定登录状态，无需每次手动输入）
 # 留空则每次启动时手动输入，或从环境变量读取
 DEFAULT_SESSDATA = ""  # 如需下载登录后才能看到的 B站字幕，填写 SESSDATA

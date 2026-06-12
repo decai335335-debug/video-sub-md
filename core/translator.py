@@ -10,6 +10,33 @@ from typing import Optional
 _DEFAULT_API_KEY = None
 _DEFAULT_API_URL = "https://api.deepseek.com/chat/completions"
 _DEFAULT_MODEL = "deepseek-v4-flash"
+_DEFAULT_MODE = "api"  # "api" 或 "local"
+_DEFAULT_LOCAL_MODEL_PATH = ""
+
+# 本地模型客户端（延迟导入）
+_get_local_llm_client = None
+
+
+def set_defaults(
+    api_key: str = None,
+    api_url: str = None,
+    model: str = None,
+    mode: str = None,
+    local_model_path: str = None,
+):
+    """设置翻译模块的默认配置。"""
+    global _DEFAULT_API_KEY, _DEFAULT_API_URL, _DEFAULT_MODEL
+    global _DEFAULT_MODE, _DEFAULT_LOCAL_MODEL_PATH
+    if api_key is not None:
+        _DEFAULT_API_KEY = api_key
+    if api_url is not None:
+        _DEFAULT_API_URL = api_url
+    if model is not None:
+        _DEFAULT_MODEL = model
+    if mode is not None:
+        _DEFAULT_MODE = mode
+    if local_model_path is not None:
+        _DEFAULT_LOCAL_MODEL_PATH = local_model_path
 
 
 def _force_line_alignment(translated_lines: list, expected_count: int) -> list:
@@ -50,18 +77,20 @@ def translate_subtitle_with_deepseek(
     api_key: str = None,
     api_url: str = None,
     model: str = None,
+    mode: str = None,
     target_chars_per_chunk: int = 1500,
     lines_per_chunk: int = 40,
     max_retries: int = 3,
 ) -> Optional[str]:
-    """调用 DeepSeek Flash API 将字幕翻译为纯中文，支持分段翻译
+    """调用 DeepSeek Flash API 或本地模型将字幕翻译为纯中文，支持分段翻译
     
     参数:
         subtitle_content: 字幕内容
         video_title: 视频标题（可选）
-        api_key: DeepSeek API 密钥（默认为 None，从环境变量读取）
+        api_key: DeepSeek API 密钥（默认为 None，从默认配置读取）
         api_url: DeepSeek API 地址（默认使用配置值）
         model: 使用的模型（默认使用配置值）
+        mode: "api" 或 "local"，默认使用配置值
         target_chars_per_chunk: 每段目标字符数
         lines_per_chunk: 每段最大行数
         max_retries: 每段最大重试次数
@@ -73,7 +102,16 @@ def translate_subtitle_with_deepseek(
     api_key = api_key or _DEFAULT_API_KEY
     api_url = api_url or _DEFAULT_API_URL
     model = model or _DEFAULT_MODEL
-    
+    mode = mode or _DEFAULT_MODE
+
+    if mode == "local":
+        return _translate_with_local_llm(
+            subtitle_content,
+            target_chars_per_chunk=target_chars_per_chunk,
+            lines_per_chunk=lines_per_chunk,
+            max_retries=max_retries,
+        )
+
     if not api_key:
         print("[警告] 未设置 API_KEY，跳过翻译")
         return None
@@ -211,6 +249,132 @@ def translate_subtitle_with_deepseek(
     return '\n'.join(translated_lines)
 
 
+def _translate_with_local_llm(
+    subtitle_content: str,
+    target_chars_per_chunk: int = 1500,
+    lines_per_chunk: int = 40,
+    max_retries: int = 3,
+) -> Optional[str]:
+    """使用本地模型翻译字幕。"""
+    global _get_local_llm_client
+    if _get_local_llm_client is None:
+        try:
+            from core.local_llm import get_client as _get_local_llm_client_impl
+            _get_local_llm_client = _get_local_llm_client_impl
+        except Exception as e:
+            print(f"[警告] 无法导入本地模型模块: {e}")
+            return None
+
+    if not _DEFAULT_LOCAL_MODEL_PATH:
+        print("[警告] 未设置本地模型路径，跳过翻译")
+        return None
+
+    lines = subtitle_content.strip().split('\n')
+    non_empty_lines = [line for line in lines if line.strip()]
+    empty_line_positions = [i for i, line in enumerate(lines) if not line.strip()]
+
+    print(f"字幕共 {len(lines)} 行，其中非空行 {len(non_empty_lines)} 行", flush=True)
+
+    if not non_empty_lines:
+        print("警告: 没有可翻译的内容")
+        return None
+
+    total_chars = sum(len(line) for line in non_empty_lines)
+    avg_chars_per_line = total_chars / len(non_empty_lines) if non_empty_lines else 100
+    actual_lines_per_chunk = max(5, int(target_chars_per_chunk / avg_chars_per_line))
+    actual_lines_per_chunk = min(actual_lines_per_chunk, lines_per_chunk)
+    actual_lines_per_chunk = max(actual_lines_per_chunk, 5)
+
+    all_translations = []
+    total_chunks = (len(non_empty_lines) + actual_lines_per_chunk - 1) // actual_lines_per_chunk
+    print(f"将分 {total_chunks} 段翻译", flush=True)
+
+    client = _get_local_llm_client(_DEFAULT_LOCAL_MODEL_PATH)
+
+    for i in range(0, len(non_empty_lines), actual_lines_per_chunk):
+        chunk_lines = non_empty_lines[i:i+actual_lines_per_chunk]
+        chunk_num = i // actual_lines_per_chunk + 1
+        print(f"翻译进度: {chunk_num}/{total_chunks}", flush=True)
+
+        global_start_idx = i
+        numbered_lines = '\n'.join(f"[{global_start_idx + idx + 1}] {line}" for idx, line in enumerate(chunk_lines))
+        expected_count = len(chunk_lines)
+
+        prompt = f"""请将以下英文字幕翻译成中文。
+
+输入共 {expected_count} 行，你的输出必须严格为 {expected_count} 行，绝对禁止多行或少行。
+
+要求：
+1. 每行输入对应一行输出，保持原有顺序
+2. 每行译文必须输出为一整行，无论多长都绝对禁止换行拆分
+3. 输出格式必须与输入一致：每行以 [编号] 开头，后面紧跟译文
+4. 不要合并多行，保持每行独立
+5. 除带编号的译文行外，不要输出任何其他内容（不要总结、解释、空行）
+
+字幕内容：
+{numbered_lines}"""
+
+        for attempt in range(max_retries):
+            try:
+                result = client.generate(
+                    prompt=prompt,
+                    system_prompt="你是一位专业的字幕翻译师，严格按行对应输出中文译文。",
+                    max_new_tokens=4096,
+                    temperature=0.5,
+                )
+                print(
+                    f"  第 {chunk_num} 段 Token: 提示词 {result['usage']['prompt_tokens']} / "
+                    f"生成 {result['usage']['completion_tokens']} / "
+                    f"总计 {result['usage']['total_tokens']} "
+                    f"(耗时 {result['elapsed']:.1f}s)"
+                )
+
+                translation = result["text"].strip()
+                if not translation:
+                    raise ValueError("翻译结果为空")
+
+                translated_lines = []
+                expected_start = global_start_idx + 1
+                last_num = expected_start - 1
+
+                for ln in translation.split('\n'):
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    m = re.match(r'^\[(\d+)\]\s*(.*)', ln)
+                    if m:
+                        num = int(m.group(1))
+                        text = m.group(2).strip()
+                        if num != last_num + 1:
+                            print(f"  警告: 第 {chunk_num} 段编号不连续，期望 [{last_num + 1}]，实际 [{num}]")
+                        last_num = num
+                        translated_lines.append(text)
+                    else:
+                        translated_lines.append(ln)
+
+                expected_lines = len(chunk_lines)
+                if len(translated_lines) != expected_lines:
+                    print(f"  第 {chunk_num} 段行数不匹配: 期望{expected_lines}行, 实际{len(translated_lines)}行, 自动修复中...")
+                    translated_lines = _force_line_alignment(translated_lines, expected_lines)
+
+                all_translations.append('\n'.join(translated_lines))
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"  第 {chunk_num} 段翻译失败，重试中... ({attempt+1}/{max_retries})")
+                else:
+                    print(f"  第 {chunk_num} 段翻译失败: {e}")
+
+    full_translation = '\n'.join(all_translations)
+    translated_lines = [ln for ln in full_translation.split('\n') if ln.strip()]
+
+    if len(translated_lines) != len(non_empty_lines):
+        print(f"警告: 全局行数不匹配，原文{len(non_empty_lines)}行 vs 译文{len(translated_lines)}行，强制对齐...")
+        translated_lines = _force_line_alignment(translated_lines, len(non_empty_lines))
+
+    return '\n'.join(translated_lines)
+
+
 def merge_translation_to_bilingual(
     original_content: str,
     translation: str,
@@ -243,11 +407,59 @@ def merge_translation_to_bilingual(
     return '\n'.join(bilingual_lines).rstrip('\n')
 
 
+def _split_file_sections(content: str) -> tuple:
+    """把文件内容拆成 (frontmatter, analysis, subtitle) 三部分。
+
+    优先使用 <!-- SUBTITLE_START --> 标记定位字幕起始位置；
+    如果没有标记，再按 ## 🔍 深度分析 和 --- 分隔线做回退解析。
+    """
+    marker = "<!-- SUBTITLE_START -->"
+    marker_pos = content.find(marker)
+    if marker_pos != -1:
+        before_marker = content[:marker_pos].rstrip("\n")
+        # 如果 marker 前面紧跟 ---，把它从 analysis 中去掉
+        if before_marker.endswith("---"):
+            before_marker = before_marker[:-3].rstrip("\n")
+        subtitle = content[marker_pos + len(marker):].lstrip("\n")
+        first_sep = before_marker.find("---")
+        if first_sep == -1:
+            return (before_marker.strip(), "", subtitle)
+        frontmatter = before_marker[:first_sep].rstrip("\n")
+        after_frontmatter = before_marker[first_sep + 3:].lstrip("\n")
+        analysis_heading = "## 🔍 深度分析"
+        if after_frontmatter.startswith(analysis_heading):
+            return (frontmatter, after_frontmatter.rstrip("\n"), subtitle)
+        return (frontmatter, "", subtitle)
+
+    first_sep = content.find("---")
+    if first_sep == -1:
+        return (content.strip(), "", "")
+
+    frontmatter = content[:first_sep].rstrip("\n")
+    after_frontmatter = content[first_sep + 3:].lstrip("\n")
+
+    analysis_heading = "## 🔍 深度分析"
+    heading_pos = after_frontmatter.find(analysis_heading)
+    has_analysis = after_frontmatter.startswith(analysis_heading) or (heading_pos != -1 and heading_pos < 200)
+
+    if has_analysis:
+        # 分析区内部可能也有 ---，从末尾往前找最后一个 --- 作为分析区结束
+        second_sep = after_frontmatter.rfind("---")
+        if second_sep != -1 and second_sep > after_frontmatter.find(analysis_heading) + 20:
+            analysis = after_frontmatter[:second_sep].rstrip("\n")
+            subtitle = after_frontmatter[second_sep + 3:].lstrip("\n")
+            return (frontmatter, analysis, subtitle)
+        else:
+            return (frontmatter, after_frontmatter.strip(), "")
+    else:
+        return (frontmatter, "", after_frontmatter)
+
+
 def add_translation_to_file(filepath: Path, translation: str, original_subtitle: str = None):
     """将翻译合并到字幕文件（保留标题元数据和已有分析内容）
-    
-    文件结构: [标题+元数据] + --- + [> 分析（可选）] + [字幕内容]
-    
+
+    文件结构: [标题+元数据] + --- + [## 🔍 深度分析 + 分析内容（可选）] + --- + [字幕内容]
+
     参数:
         filepath: 字幕文件路径
         translation: 翻译后的中文内容
@@ -256,47 +468,16 @@ def add_translation_to_file(filepath: Path, translation: str, original_subtitle:
     """
     try:
         content = filepath.read_text(encoding="utf-8")
-        parts = content.split("---", 1)  # 只分割一次
-        
-        if len(parts) >= 2:
-            header = parts[0].rstrip("\n")  # 标题 + 元数据
-            body = parts[1].lstrip("\n")    # 内容（可能包含分析和字幕）
-            
-            # 如果提供了原始字幕内容，直接用它做双语合并
-            if original_subtitle:
-                source_for_bilingual = original_subtitle
-            else:
-                source_for_bilingual = body
-            
-            bilingual = merge_translation_to_bilingual(source_for_bilingual, translation)
-            
-            # 如果 body 里已有分析内容（> 开头的引用块），保留它
-            body_lines = body.split("\n")
-            analysis_lines = []
-            subtitle_start_idx = 0
-            
-            for i, line in enumerate(body_lines):
-                stripped = line.strip()
-                if stripped.startswith("> "):
-                    analysis_lines.append(line)
-                    subtitle_start_idx = i + 1
-                elif stripped == "" and subtitle_start_idx > 0:
-                    subtitle_start_idx = i + 1
-                elif subtitle_start_idx > 0:
-                    # 分析结束后遇到非引用行，停止
-                    break
-            
-            if analysis_lines:
-                analysis_text = "\n".join(analysis_lines)
-                new_content = f"{header}\n\n---\n\n{analysis_text}\n\n{bilingual}"
-            else:
-                new_content = f"{header}\n\n---\n\n{bilingual}"
+        header, analysis, subtitle_part = _split_file_sections(content)
+
+        source = original_subtitle if original_subtitle else subtitle_part
+        bilingual = merge_translation_to_bilingual(source, translation)
+
+        if analysis:
+            new_content = f"{header}\n\n---\n\n{analysis}\n\n---\n\n{bilingual}"
         else:
-            # 没有 --- 分隔线
-            source = original_subtitle if original_subtitle else content
-            bilingual = merge_translation_to_bilingual(source, translation)
-            new_content = bilingual
-        
+            new_content = f"{header}\n\n---\n\n{bilingual}"
+
         filepath.write_text(new_content, encoding="utf-8")
         print(f"✓ 已添加翻译: {filepath.name}")
     except Exception as e:

@@ -29,6 +29,8 @@ from config import (
     DEEPSEEK_MODEL,
     DEEPSEEK_FLASH_MODEL,
     DEFAULT_SESSDATA,
+    LOCAL_MODEL_PATH,
+    DEFAULT_AI_MODE,
 )
 from models import DownloadResult, BatchReport
 
@@ -42,6 +44,36 @@ except ImportError:
     console.print("[yellow]警告: 无法导入 core.translator 模块，翻译功能将不可用[/yellow]")
     translate_subtitle_with_deepseek = None
     add_translation_to_file = None
+
+# 导入本地模型模块（可选）
+try:
+    from core.local_llm import get_client as get_local_llm_client
+except ImportError:
+    get_local_llm_client = None
+
+# 当前会话的 AI 模式："local" 或 "api"
+_current_ai_mode: str = DEFAULT_AI_MODE
+
+
+def _choose_ai_mode() -> str:
+    """询问用户使用本地模型还是 API。"""
+    global _current_ai_mode
+    default_hint = "本地模型" if DEFAULT_AI_MODE == "local" else "DeepSeek API"
+    print()
+    console.print("[bold]选择 AI 模式[/bold]")
+    console.print(f"[dim]直接回车 = 默认使用 {default_hint}[/dim]")
+    console.print("[dim]按 0 = 本地模型（{0}）[/dim]".format(LOCAL_MODEL_PATH))
+    console.print("[dim]按 1 = DeepSeek API[/dim]")
+    choice = input("  选择 (0/1/回车): ").strip()
+    if choice == "0":
+        _current_ai_mode = "local"
+    elif choice == "1":
+        _current_ai_mode = "api"
+    else:
+        _current_ai_mode = DEFAULT_AI_MODE
+    mode_text = "本地模型" if _current_ai_mode == "local" else "DeepSeek API"
+    console.print(f"[dim]已选择: {mode_text}[/dim]")
+    return _current_ai_mode
 
 
 def _clean_summary_markdown(text: str) -> str:
@@ -136,15 +168,72 @@ def _clean_summary_markdown(text: str) -> str:
     return '\n'.join(final_lines).strip()
 
 
+def _split_file_sections(content: str) -> tuple:
+    """把文件内容拆成 (frontmatter, analysis, subtitle) 三部分。
+
+    优先使用 <!-- SUBTITLE_START --> 标记定位字幕起始位置；
+    如果没有标记，再按 ## 🔍 深度分析 和 --- 分隔线做回退解析。
+    """
+    marker = "<!-- SUBTITLE_START -->"
+    marker_pos = content.find(marker)
+    if marker_pos != -1:
+        before_marker = content[:marker_pos].rstrip("\n")
+        # 如果 marker 前面紧跟 ---，把它从 analysis 中去掉
+        if before_marker.endswith("---"):
+            before_marker = before_marker[:-3].rstrip("\n")
+        subtitle = content[marker_pos + len(marker):].lstrip("\n")
+        # 从 before_marker 中分离 frontmatter 和 analysis
+        first_sep = before_marker.find("---")
+        if first_sep == -1:
+            return (before_marker.strip(), "", subtitle)
+        frontmatter = before_marker[:first_sep].rstrip("\n")
+        after_frontmatter = before_marker[first_sep + 3:].lstrip("\n")
+        analysis_heading = "## 🔍 深度分析"
+        if after_frontmatter.startswith(analysis_heading):
+            return (frontmatter, after_frontmatter.rstrip("\n"), subtitle)
+        return (frontmatter, "", subtitle)
+
+    # 无标记时的回退解析
+    first_sep = content.find("---")
+    if first_sep == -1:
+        return (content.strip(), "", "")
+
+    frontmatter = content[:first_sep].rstrip("\n")
+    after_frontmatter = content[first_sep + 3:].lstrip("\n")
+
+    analysis_heading = "## 🔍 深度分析"
+    heading_pos = after_frontmatter.find(analysis_heading)
+    has_analysis = after_frontmatter.startswith(analysis_heading) or (heading_pos != -1 and heading_pos < 200)
+
+    if has_analysis:
+        # 分析区内部可能也有 ---，优先找分析区结束后的最后一个 ---
+        #  heuristic：从末尾往前找 ---，假设字幕区不会以 --- 结尾
+        second_sep = after_frontmatter.rfind("---")
+        if second_sep != -1 and second_sep > after_frontmatter.find(analysis_heading) + 20:
+            analysis = after_frontmatter[:second_sep].rstrip("\n")
+            subtitle = after_frontmatter[second_sep + 3:].lstrip("\n")
+            return (frontmatter, analysis, subtitle)
+        else:
+            return (frontmatter, after_frontmatter.strip(), "")
+    else:
+        return (frontmatter, "", after_frontmatter)
+
+
+def _extract_subtitle_body(content: str) -> str:
+    """从文件内容中提取纯字幕部分，跳过 frontmatter 和已存在的分析内容。"""
+    _, _, subtitle = _split_file_sections(content)
+    return subtitle
+
+
 def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "") -> Optional[str]:
-    """调用 DeepSeek API 为字幕内容生成深度分析"""
-    if not DEEPSEEK_API_KEY:
-        console.print("[yellow]警告: 未设置 DEEPSEEK_API_KEY 环境变量，跳过分析生成[/yellow]")
-        return None
-
-    prompt = f"""你是一位精通认知科学、传播学和知识工程的深度内容分析师。请严格按以下协议执行，禁止偏离。
-
-注意：输出时不要以 `# ` 或 `## ` 标题开头，直接从 `### ` 三级标题开始（如 `### 1.1 拓扑结构`）。文件外层已有 `## 🔍 深度分析` 标题，不要重复。
+    """调用 DeepSeek API 或本地模型为字幕内容生成深度分析。"""
+    system_prompt = (
+        "你是一位精通认知科学、传播学和知识工程的深度内容分析师。"
+        "请严格按以下协议执行，禁止偏离。"
+        "除非直接引用原文，否则所有分析、总结、表格内容必须使用中文输出。"
+        "引用原文时应尽量简短，并在引用后用中文说明其含义。"
+    )
+    prompt = f"""注意：输出时不要以 `# ` 或 `## ` 标题开头，直接从 `### ` 三级标题开始（如 `### 1.1 拓扑结构`）。文件外层已有 `## 🔍 深度分析` 标题，不要重复。
 
 ---
 
@@ -172,6 +261,7 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 8. **分隔线统一使用 `---`**，前后各留一个空行。
 9. **时间戳只用单个起始时间点**：如 `` `00:00` `` 或 `` `01:17` ``，不要写成区间 `` `00:00-00:49` ``。时间戳整体包裹在反引号中。
 10. **不要用方括号 `[]` 包裹普通文本**：方括号在 Markdown 中是链接语法。时间轴中的主题和动作用普通文本或粗体即可，不要用 `[主题]` 或 `[动作]`。
+11. **分析内容中不要使用 `---` 分隔线**：文件外层已用 `---` 分隔分析区和字幕区，分析内部再用 `---` 会导致结构解析错误。
 
 ---
 
@@ -231,7 +321,7 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 ### 1.5 趣味叙事重构（Fun Narrative Reconstruction）【新增】
 用**非学术的、有趣的**方式重新讲述这个视频的核心故事，要求：
 
-- **类比引擎**：将技术概念映射到日常生活场景，至少3个类比（如：把"禁用异常"比作"手术室禁用'也许能行'"）
+- **类比引擎**：将技术概念映射到日常生活场景，至少3个类比（如：把"禁用异常"比作"手术室禁用'也许能行'")
 - **彩蛋挖掘**：提取视频中所有有趣的旁支细节、冷知识、个人轶事，至少3个，并解释它们如何服务于主线叙事
 - **叙事节奏（电影化）**：用电影类型描述视频结构（如：灾难片→历史悬疑→动作片→哲学片）
 - **一句话钩子**：用一句带有悬念或反差感的话概括视频，适合推荐给朋友
@@ -350,6 +440,13 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
 
 请按以上格式输出深度分析内容："""
 
+    if _current_ai_mode == "local" and get_local_llm_client:
+        return _generate_summary_with_local_llm(prompt, system_prompt)
+
+    if not DEEPSEEK_API_KEY:
+        console.print("[yellow]警告: 未设置 DEEPSEEK_API_KEY 环境变量，跳过分析生成[/yellow]")
+        return None
+
     try:
         headers = {
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -368,24 +465,47 @@ def generate_summary_with_deepseek(subtitle_content: str, video_title: str = "")
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=180)
         response.raise_for_status()
         result = response.json()
-        
+
         # 打印 token 消耗
         usage = result.get("usage", {})
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", 0)
         console.print(f"[dim]分析 Token: 提示词 {prompt_tokens} / 生成 {completion_tokens} / 总计 {total_tokens}[/dim]")
-        
+
         # 检查是否因长度被截断
         finish_reason = result.get("choices", [{}])[0].get("finish_reason", "")
         if finish_reason == "length":
             console.print("[yellow]警告: API 输出达到长度限制，分析内容可能不完整[/yellow]")
-        
+
         summary = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         summary = _clean_summary_markdown(summary)
         return summary if summary else None
     except Exception as e:
         console.print(f"[red]调用 DeepSeek API 失败: {e}[/red]")
+        return None
+
+
+def _generate_summary_with_local_llm(prompt: str, system_prompt: str) -> Optional[str]:
+    """使用本地模型生成深度分析。"""
+    try:
+        client = get_local_llm_client(LOCAL_MODEL_PATH)
+        result = client.generate(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=4096,
+            temperature=0.7,
+        )
+        console.print(
+            f"[dim]分析 Token: 提示词 {result['usage']['prompt_tokens']} / "
+            f"生成 {result['usage']['completion_tokens']} / "
+            f"总计 {result['usage']['total_tokens']} "
+            f"(耗时 {result['elapsed']:.1f}s)[/dim]"
+        )
+        summary = _clean_summary_markdown(result["text"])
+        return summary if summary else None
+    except Exception as e:
+        console.print(f"[red]本地模型分析失败: {e}[/red]")
         return None
 
 
@@ -400,8 +520,19 @@ def add_summary_to_file(filepath: Path, summary: str):
         parts = content.split("---", 1)  # 只分割一次，--- 是 markdown 分隔线
         
         # 分析内容直接作为普通 Markdown 插入（不用 > 引用块，确保表格/列表正确渲染）
-        analysis_section = f"## 🔍 深度分析\n\n{summary}\n\n---"
-        
+        # 使用 <!-- SUBTITLE_START --> 标记明确分隔分析区和字幕区，避免后续翻译时误判
+        import re
+        summary = summary.strip()
+        # 如果 AI 已经输出了 ## 🔍 深度分析 标题，避免重复
+        if summary.startswith("## 🔍 深度分析"):
+            analysis_body = summary[len("## 🔍 深度分析"):].lstrip("\n")
+        else:
+            analysis_body = summary
+        # 清理尾部可能存在的 --- 分隔线，避免生成多个连续分隔线
+        analysis_body = re.sub(r"\n*---\s*$", "", analysis_body).strip()
+        # 用 <!-- SUBTITLE_START --> 明确标记字幕区起点
+        analysis_section = f"## 🔍 深度分析\n\n{analysis_body}\n\n---\n<!-- SUBTITLE_START -->\n"
+
         if len(parts) >= 2:
             header = parts[0].rstrip("\n")
             body = parts[1].lstrip("\n")
@@ -595,26 +726,30 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     _write_csv_report(report)
 
     # 询问是否生成分析
-    if success_results and DEEPSEEK_API_KEY:
+    ai_mode_label = "本地模型" if _current_ai_mode == "local" else "DeepSeek API"
+    if success_results and (_current_ai_mode == "local" or DEEPSEEK_API_KEY):
         console.print()
+        console.print(f"[dim]当前 AI 模式: {ai_mode_label}[/dim]")
         choice_analysis = input("是否为下载的字幕生成深度分析？(a 是 / b 否): ").strip().lower()
-        
+
         # 只有翻译模块可用时才询问翻译
         if translate_subtitle_with_deepseek:
             choice_translate = input("是否为下载的字幕生成翻译？(a 是 / b 否): ").strip().lower()
         else:
             choice_translate = "b"
             console.print("[dim]提示: 翻译模块不可用，已跳过翻译选项[/dim]")
-        
+
         do_analysis = choice_analysis == "a"
         do_translate = choice_translate == "a"
-        
+
         if do_analysis or do_translate:
             console.print()
             if do_analysis:
-                console.print("[dim]正在生成深度分析 (Pro)...[/dim]")
+                analysis_label = "本地模型" if _current_ai_mode == "local" else "Pro"
+                console.print(f"[dim]正在生成深度分析 ({analysis_label})...[/dim]")
             if do_translate:
-                console.print("[dim]正在生成翻译 (Flash)...[/dim]")
+                translate_label = "本地模型" if _current_ai_mode == "local" else "Flash"
+                console.print(f"[dim]正在生成翻译 ({translate_label})...[/dim]")
             
             for r in success_results:
                 if r.filepath and r.filepath.exists():
@@ -622,16 +757,10 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                         # 保存原始文件内容（在添加分析之前）
                         original_file_content = r.filepath.read_text(encoding="utf-8")
                         
-                        # 提取纯字幕内容用于翻译（去除 frontmatter）
+                        # 提取纯字幕内容用于翻译（去除 frontmatter 和已有分析内容）
                         subtitle_content = original_file_content
                         content_normalized = original_file_content.replace('\r\n', '\n').replace('\r', '\n')
-                        positions = [m.start() for m in re.finditer('---', content_normalized)]
-                        if len(positions) >= 2:
-                            # 有 frontmatter 和字幕结束标记
-                            subtitle_content = content_normalized[positions[0] + 3:positions[1]].strip()
-                        elif len(positions) == 1:
-                            # 只有一个 ---（frontmatter结束标记）
-                            subtitle_content = content_normalized[positions[0] + 3:].strip()
+                        subtitle_content = _extract_subtitle_body(content_normalized)
                         
                         if do_analysis:
                             summary = generate_summary_with_deepseek(original_file_content, r.title or "")
@@ -690,6 +819,17 @@ def download(
 
     from core.bilibili.metadata import set_cookie
 
+    # 设置翻译模块默认模式
+    if translate_subtitle_with_deepseek:
+        from core import translator as _translator
+        _translator.set_defaults(
+            api_key=DEEPSEEK_API_KEY,
+            api_url=DEEPSEEK_API_URL,
+            model=DEEPSEEK_FLASH_MODEL,
+            mode=DEFAULT_AI_MODE,
+            local_model_path=LOCAL_MODEL_PATH,
+        )
+
     def _check_cookie_validity(cookie_value: str) -> bool:
         """检查 SESSDATA 是否能让 B站识别为登录状态。"""
         if not cookie_value:
@@ -700,6 +840,12 @@ def download(
             return bool(nav.get("data", {}).get("isLogin"))
         except Exception:
             return False
+
+    # 选择 AI 模式
+    _choose_ai_mode()
+    if translate_subtitle_with_deepseek:
+        from core import translator as _translator
+        _translator.set_defaults(mode=_current_ai_mode)
 
     # Cookie 设置与提示
     if effective_cookie:
