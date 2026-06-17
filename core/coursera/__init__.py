@@ -1,0 +1,1 @@
+"""Coursera subtitle downloader module."""

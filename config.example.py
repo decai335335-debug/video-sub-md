@@ -25,6 +25,7 @@ DEFAULT_OUTPUT_DIR = Path("E:/Obsidian/主仓库/11-subtitles")
 # 平台子目录
 BILIBILI_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "bilibili"
 YOUTUBE_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Youtube"
+COURSERA_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Coursera"
 
 # Obsidian Vault 配置（用于生成 obsidian:// 可点击链接）
 OBSIDIAN_VAULT_ROOT = Path("E:/Obsidian/主仓库")

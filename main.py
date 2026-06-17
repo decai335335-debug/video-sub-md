@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""video-sub-md — 统一视频字幕下载器（Bilibili + YouTube）"""
+"""video-sub-md — 统一视频字幕下载器（Bilibili + YouTube + Coursera）"""
 
 import asyncio
 import csv
@@ -21,6 +21,7 @@ from rich.text import Text
 from config import (
     BILIBILI_OUTPUT_DIR,
     YOUTUBE_OUTPUT_DIR,
+    DEFAULT_OUTPUT_DIR,
     OBSIDIAN_VAULT_NAME,
     OBSIDIAN_VAULT_ROOT,
     MAX_CONCURRENT,
@@ -36,6 +37,7 @@ from models import DownloadResult, BatchReport
 
 console = Console(force_terminal=True)
 app = typer.Typer(add_completion=False)
+COURSERA_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Coursera"
 
 # 导入翻译模块
 try:
@@ -554,6 +556,8 @@ def detect_platform(url: str) -> str:
         return "bilibili"
     if "youtube.com" in u or "youtu.be" in u:
         return "youtube"
+    if "coursera.org" in u or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", u):
+        return "coursera"
     return "unknown"
 
 
@@ -597,6 +601,41 @@ async def download_youtube_task(url: str, output_dir: Path, lang: Optional[str])
     return normalize_result(result, "youtube")
 
 
+async def download_coursera_task(url: str, output_dir: Path, lang: Optional[str]) -> DownloadResult:
+    """异步包装 Coursera 课程字幕下载：一个课程链接生成一个合并 Markdown"""
+    from core.coursera.downloader import CourseraDownloader
+
+    def _sync_download():
+        downloader = CourseraDownloader(
+            cookies_from_browser=os.environ.get("COURSERA_COOKIES_FROM_BROWSER", "")
+        )
+        return downloader.download_course_markdown(url, output_dir, preferred_lang=lang or "en")
+
+    result = await asyncio.to_thread(_sync_download)
+    status = "success" if result.success_count > 0 else "error"
+    error = None if status == "success" else "Coursera course subtitles not found"
+    return DownloadResult(
+        platform="coursera",
+        video_id=result.course.course_id,
+        title=result.course.title,
+        status=status,
+        language=lang or "en",
+        filepath=result.output_path,
+        error=error,
+    )
+
+
+def platform_tag(platform: str) -> str:
+    """Rich label for result tables."""
+    if platform == "bilibili":
+        return "[orange3]B站[/orange3]"
+    if platform == "youtube":
+        return "[red]YouTube[/red]"
+    if platform == "coursera":
+        return "[blue]Coursera[/blue]"
+    return platform or "-"
+
+
 def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int, effective_cookie: str):
     """处理单次下载任务"""
     # 过滤 typer 单命令模式下误传的命令名
@@ -606,21 +645,24 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     # 按平台分组
     bilibili_urls = []
     youtube_urls = []
+    coursera_urls = []
     for url in urls:
         platform = detect_platform(url)
         if platform == "bilibili":
             bilibili_urls.append(url)
         elif platform == "youtube":
             youtube_urls.append(url)
+        elif platform == "coursera":
+            coursera_urls.append(url)
         else:
             console.print(f"[yellow]⚠[/yellow] 无法识别平台，跳过: {url}")
 
-    if not bilibili_urls and not youtube_urls:
+    if not bilibili_urls and not youtube_urls and not coursera_urls:
         console.print("[red]错误：没有有效的视频链接[/red]")
         return
 
     console.print(
-        f"[dim]Bilibili: {len(bilibili_urls)} 个 | YouTube: {len(youtube_urls)} 个 | "
+        f"[dim]Bilibili: {len(bilibili_urls)} 个 | YouTube: {len(youtube_urls)} 个 | Coursera: {len(coursera_urls)} 个 | "
         f"并发: {max_concurrent}[/dim]\n"
     )
 
@@ -630,6 +672,8 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         tasks.append(("bilibili", url, BILIBILI_OUTPUT_DIR))
     for url in youtube_urls:
         tasks.append(("youtube", url, YOUTUBE_OUTPUT_DIR))
+    for url in coursera_urls:
+        tasks.append(("coursera", url, COURSERA_OUTPUT_DIR))
 
     # 异步批量下载
     async def _batch():
@@ -642,8 +686,9 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 try:
                     if platform == "bilibili":
                         return await download_bilibili_task(url, output_dir, lang, effective_cookie)
-                    else:
+                    if platform == "youtube":
                         return await download_youtube_task(url, output_dir, lang)
+                    return await download_coursera_task(url, output_dir, lang)
                 except Exception as e:
                     return DownloadResult(
                         platform=platform,
@@ -709,8 +754,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 path_text = Text(r.filepath.name, style=f"link {file_link}")
                 console.print(f"[yellow]警告:[/yellow] {r.filepath.name} 不在 Obsidian vault 路径下，使用 file:// 链接")
             
-            platform_tag = "[orange3]B站[/orange3]" if r.platform == "bilibili" else "[red]YouTube[/red]"
-            file_table.add_row(platform_tag, r.title or "-", path_text)
+            file_table.add_row(platform_tag(r.platform), r.title or "-", path_text)
         console.print()
         console.print(file_table)
 
@@ -719,8 +763,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     if failed_results:
         console.print()
         for r in failed_results:
-            platform_tag = "[orange3]B站[/orange3]" if r.platform == "bilibili" else "[red]YouTube[/red]"
-            console.print(f"[red]✗[/red] {platform_tag} {r.title or r.video_id or '未知'}: {r.error}")
+            console.print(f"[red]✗[/red] {platform_tag(r.platform)} {r.title or r.video_id or '未知'}: {r.error}")
 
     # CSV 报告
     _write_csv_report(report)
@@ -802,15 +845,15 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
 
 @app.command()
 def download(
-    urls: Optional[List[str]] = typer.Argument(None, help="视频链接（支持 Bilibili + YouTube 混合）"),
+    urls: Optional[List[str]] = typer.Argument(None, help="视频链接（支持 Bilibili + YouTube + Coursera 混合）"),
     lang: Optional[str] = typer.Option(None, "--lang", "-l", help="指定语言代码，如 zh, en"),
     max_concurrent: int = typer.Option(MAX_CONCURRENT, "--max-concurrent", "-c", help="最大并发数"),
     cookie: Optional[str] = typer.Option(None, "--cookie", help="Bilibili SESSDATA Cookie"),
 ):
-    """下载 Bilibili + YouTube 字幕为 Markdown，支持混合链接，按 q 退出"""
+    """下载 Bilibili + YouTube + Coursera 字幕为 Markdown，支持混合链接，按 q 退出"""
     console.print(Panel.fit(
         "[bold cyan]video-sub-md[/bold cyan] — 统一视频字幕下载器\n"
-        "[dim]Bilibili + YouTube · Markdown 输出 · Ctrl+点击跳转 Obsidian · 按 q 退出[/dim]",
+        "[dim]Bilibili + YouTube + Coursera · Markdown 输出 · Ctrl+点击跳转 Obsidian · 按 q 退出[/dim]",
         border_style="cyan",
     ))
 
@@ -874,6 +917,7 @@ def download(
             console.print(f"[dim]已设置登录 Cookie ({len(_meta._global_cookie)} 字符)[/dim]")
 
     # 循环处理下载任务
+    cli_mode = bool(urls)
     while True:
         current_urls = urls if urls else []
         urls = None  # 重置，下次进入交互模式
@@ -882,7 +926,7 @@ def download(
         if not current_urls:
             console.print("\n" + "-" * 50)
             console.print("  [bold]粘贴视频链接[/bold]")
-            console.print("  · 支持 Bilibili + YouTube 混合粘贴")
+            console.print("  · 支持 Bilibili + YouTube + Coursera 混合粘贴")
             console.print("  · 空格、逗号、换行分隔均可")
             console.print("  · 输入空行结束，按 q 退出")
             console.print("-" * 50)
@@ -912,8 +956,10 @@ def download(
         report = _process_downloads(current_urls, lang, max_concurrent, effective_cookie)
         
         # 检查是否有失败（非循环模式下）
-        if urls and report and report.failed > 0:
-            raise typer.Exit(1)
+        if cli_mode:
+            if report and report.failed > 0:
+                raise typer.Exit(1)
+            return
 
 
 def _write_csv_report(report: BatchReport):
