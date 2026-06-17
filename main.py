@@ -657,8 +657,44 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         else:
             console.print(f"[yellow]⚠[/yellow] 无法识别平台，跳过: {url}")
 
+    coursera_expand_errors = []
+    if coursera_urls:
+        expanded_coursera_urls = []
+        seen_coursera = set()
+        from core.coursera.downloader import CourseraDownloader
+
+        coursera_downloader = CourseraDownloader(
+            cookies_from_browser=os.environ.get("COURSERA_COOKIES_FROM_BROWSER", "")
+        )
+        for url in coursera_urls:
+            try:
+                course_slugs = coursera_downloader.expand_to_course_slugs(url)
+                for slug in course_slugs:
+                    if slug not in seen_coursera:
+                        seen_coursera.add(slug)
+                        expanded_coursera_urls.append(slug)
+            except Exception as exc:
+                coursera_expand_errors.append(
+                    DownloadResult(
+                        platform="coursera",
+                        title=url[:80],
+                        status="error",
+                        error=str(exc),
+                    )
+                )
+        coursera_urls = expanded_coursera_urls
+
     if not bilibili_urls and not youtube_urls and not coursera_urls:
         console.print("[red]错误：没有有效的视频链接[/red]")
+        if coursera_expand_errors:
+            report = BatchReport(
+                total=len(coursera_expand_errors),
+                success=0,
+                failed=len(coursera_expand_errors),
+                results=coursera_expand_errors,
+            )
+            _write_csv_report(report)
+            return report
         return
 
     console.print(
@@ -701,7 +737,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         results = await asyncio.gather(*coros)
         return results
 
-    results = asyncio.run(_batch())
+    results = coursera_expand_errors + asyncio.run(_batch())
 
     # 统计
     success = sum(1 for r in results if r.status == "success")

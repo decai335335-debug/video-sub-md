@@ -42,17 +42,32 @@ def download(
         cookies_from_browser=cookies_from_browser,
     )
     console.print(f"[cyan]Scanning Coursera course...[/cyan] {url}")
-    result = downloader.download_course_markdown(url, output, preferred_lang=lang)
+    course_slugs = downloader.expand_to_course_slugs(url)
+    console.print(f"[dim]Resolved {len(course_slugs)} Coursera course(s).[/dim]")
 
-    console.print(f"[green]Saved:[/green] {result.output_path}")
+    total_success = total_skipped = total_failed = 0
+    for course_slug in course_slugs:
+        result = downloader.download_course_markdown(course_slug, output, preferred_lang=lang)
+        total_success += result.success_count
+        total_skipped += result.skipped_count
+        total_failed += result.failed_count
+
+        console.print(f"[green]Saved:[/green] {result.output_path}")
+        console.print(
+            f"[green]success {result.success_count}[/green] | "
+            f"[yellow]skipped {result.skipped_count}[/yellow] | "
+            f"[red]failed {result.failed_count}[/red]"
+        )
+        for lecture in result.course.lectures:
+            status = "OK" if lecture.segments else f"SKIP {lecture.error}"
+            console.print(f"{lecture.index:02d}. {lecture.title} [{lecture.selected_lang or '-'}] {status}")
+
     console.print(
-        f"[green]success {result.success_count}[/green] | "
-        f"[yellow]skipped {result.skipped_count}[/yellow] | "
-        f"[red]failed {result.failed_count}[/red]"
+        f"[bold]Total:[/bold] "
+        f"[green]success {total_success}[/green] | "
+        f"[yellow]skipped {total_skipped}[/yellow] | "
+        f"[red]failed {total_failed}[/red]"
     )
-    for lecture in result.course.lectures:
-        status = "OK" if lecture.segments else f"SKIP {lecture.error}"
-        console.print(f"{lecture.index:02d}. {lecture.title} [{lecture.selected_lang or '-'}] {status}")
 
 
 if __name__ == "__main__":

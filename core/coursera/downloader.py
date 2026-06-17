@@ -12,12 +12,12 @@ import re
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 from config import FILENAME_BAD_CHARS
-from core.coursera.extractor import build_lecture_url, extract_course_slug
+from core.coursera.extractor import build_lecture_url, extract_collection_slug, extract_course_slug
 from core.coursera.formatter import course_to_markdown, parse_srt
 from core.coursera.models import CourseraCourse, CourseraDownloadResult, CourseraLecture
 
@@ -77,6 +77,34 @@ class CourseraDownloader:
             raise ValueError(f"Unsupported browser for cookies: {browser}")
         self.session.cookies.update(loader(domain_name=".coursera.org"))
 
+    def expand_to_course_slugs(self, url_or_slug: str) -> list[str]:
+        """Resolve a Coursera course/specialization/certificate URL to course slugs."""
+        value = (url_or_slug or "").strip()
+        if not value:
+            return []
+
+        parsed = urlparse(value if "://" in value else f"https://www.coursera.org/learn/{value}")
+        if parsed.path.startswith("/search"):
+            raise ValueError("Coursera search pages are not downloadable. Paste course, specialization, or certificate URLs.")
+
+        try:
+            return [extract_course_slug(value)]
+        except ValueError:
+            pass
+
+        kind, slug = extract_collection_slug(value)
+        data = self._get_json(
+            f"{COURSERA_API}/onDemandSpecializations.v1/",
+            params={"q": "slug", "slug": slug, "fields": "name,slug,courseIds"},
+        )
+        elements = data.get("elements") or []
+        if not elements:
+            raise RuntimeError(f"Coursera {kind} not found or not accessible: {slug}")
+
+        course_ids = elements[0].get("courseIds") or []
+        course_slugs = [self._get_course_slug_by_id(course_id) for course_id in course_ids]
+        return [course_slug for course_slug in course_slugs if course_slug]
+
     def get_course(self, url_or_slug: str, preferred_lang: str = "en") -> CourseraCourse:
         slug = extract_course_slug(url_or_slug)
         data = self._get_course_materials(slug)
@@ -116,12 +144,12 @@ class CourseraDownloader:
                         index=index,
                         course_id=course_id,
                         module_id=module_id,
-                        module_name=module.get("name") or f"Module {len(lectures) + 1}",
+                        module_name=clean_title(module.get("name") or f"Module {len(lectures) + 1}"),
                         lesson_id=lesson_id,
-                        lesson_name=lesson.get("name") or "",
+                        lesson_name=clean_title(lesson.get("name") or ""),
                         item_id=item_id,
                         item_slug=item.get("slug") or item_id,
-                        title=item.get("name") or item_id,
+                        title=clean_title(item.get("name") or item_id),
                         url=build_lecture_url(slug, item_id, item.get("slug") or item_id),
                         duration_ms=int(item.get("timeCommitment") or 0),
                         subtitles=subtitles,
@@ -132,7 +160,7 @@ class CourseraDownloader:
         return CourseraCourse(
             slug=slug,
             course_id=course_id,
-            title=self._get_course_title(slug) or self._course_title_from_slug(slug),
+            title=clean_title(self._get_course_title(slug) or self._course_title_from_slug(slug)),
             url=f"{COURSERA_ORIGIN}/learn/{slug}",
             lectures=lectures,
         )
@@ -202,6 +230,14 @@ class CourseraDownloader:
         except Exception:
             return ""
 
+    def _get_course_slug_by_id(self, course_id: str) -> str:
+        data = self._get_json(
+            f"{COURSERA_API}/courses.v1/{course_id}",
+            params={"fields": "name,slug"},
+        )
+        elements = data.get("elements") or []
+        return str(elements[0].get("slug") or "").strip() if elements else ""
+
     def _get_lecture_subtitles(
         self, course_id: str, item_id: str, preferred_lang: str
     ) -> tuple[dict[str, str], str]:
@@ -259,12 +295,16 @@ def choose_language(subtitles: dict[str, str], preferred_lang: str) -> str:
 
 
 def safe_filename(value: str) -> str:
-    safe = str(value or "coursera-course").strip()
+    safe = clean_title(value or "coursera-course")
     for char in FILENAME_BAD_CHARS:
         safe = safe.replace(char, "_")
     safe = safe.replace("#", "_")
     safe = re.sub(r"\s+", " ", safe).strip(" ._")
     return (safe or "coursera-course")[:120]
+
+
+def clean_title(value: str) -> str:
+    return re.sub(r"[\u2028\u2029\r\n\t]+", " ", str(value or "")).strip()
 
 
 def unique_path(path: Path) -> Path:
