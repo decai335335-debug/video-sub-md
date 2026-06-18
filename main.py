@@ -726,15 +726,34 @@ def _dedupe_urls(urls: List[str]) -> List[str]:
     return unique
 
 
-def _expand_bilibili_playlists(urls: List[str]) -> List[str]:
+def _safe_folder_name(name: str, fallback: str = "playlist") -> str:
+    cleaned = re.sub(r"[\u2028\u2029\r\n\t]+", " ", str(name or fallback))
+    for ch in '\\/:*?"<>|':
+        cleaned = cleaned.replace(ch, "_")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._")
+    return (cleaned or fallback)[:120]
+
+
+def _dedupe_bilibili_tasks(tasks: List[tuple[str, Path]]) -> List[tuple[str, Path]]:
+    seen = set()
+    unique = []
+    for url, output_dir in tasks:
+        key = (url, str(output_dir).lower())
+        if key not in seen:
+            seen.add(key)
+            unique.append((url, output_dir))
+    return unique
+
+
+def _expand_bilibili_playlists(urls: List[str]) -> List[tuple[str, Path]]:
     """Ask whether Bilibili collections/seasons should be expanded to all videos."""
     if not urls:
-        return urls
+        return []
 
     from core.bilibili.extractor import extract_bvid, extract_collection_info, is_collection_url
     from core.bilibili.metadata import fetch_collection_videos, fetch_video_ugc_season
 
-    expanded: List[str] = []
+    expanded: List[tuple[str, Path]] = []
     for url in urls:
         try:
             title = ""
@@ -749,7 +768,7 @@ def _expand_bilibili_playlists(urls: List[str]) -> List[str]:
                 title, bvids = fetch_video_ugc_season(current_bvid)
 
             if len(bvids) <= 1:
-                expanded.append(url)
+                expanded.append((url, BILIBILI_OUTPUT_DIR))
                 continue
 
             current_hint = ""
@@ -764,14 +783,16 @@ def _expand_bilibili_playlists(urls: List[str]) -> List[str]:
                 console.print(f"[dim]{current_hint}[/dim]")
             choice = input("是否下载整个合集？(a 全部 / b 仅当前): ").strip().lower()
             if choice == "a":
-                expanded.extend(_bilibili_video_url(bvid) for bvid in bvids)
+                playlist_dir = BILIBILI_OUTPUT_DIR / _safe_folder_name(title, "Bilibili播放列表")
+                expanded.extend((_bilibili_video_url(bvid), playlist_dir) for bvid in bvids)
+                console.print(f"[dim]合集将保存到: {playlist_dir}[/dim]")
             else:
-                expanded.append(url)
+                expanded.append((url, BILIBILI_OUTPUT_DIR))
         except Exception as exc:
             console.print(f"[yellow]播放列表检测失败，按单个视频处理: {url} ({exc})[/yellow]")
-            expanded.append(url)
+            expanded.append((url, BILIBILI_OUTPUT_DIR))
 
-    return _dedupe_urls(expanded)
+    return _dedupe_bilibili_tasks(expanded)
 
 
 def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int, effective_cookie: str):
@@ -795,7 +816,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         else:
             console.print(f"[yellow]⚠[/yellow] 无法识别平台，跳过: {url}")
 
-    bilibili_urls = _expand_bilibili_playlists(bilibili_urls)
+    bilibili_tasks = _expand_bilibili_playlists(bilibili_urls)
 
     coursera_expand_errors = []
     if coursera_urls:
@@ -825,7 +846,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 )
         coursera_urls = expanded_coursera_urls
 
-    if not bilibili_urls and not youtube_urls and not coursera_urls:
+    if not bilibili_tasks and not youtube_urls and not coursera_urls:
         console.print("[red]错误：没有有效的视频链接[/red]")
         if coursera_expand_errors:
             report = BatchReport(
@@ -839,14 +860,14 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         return
 
     console.print(
-        f"[dim]Bilibili: {len(bilibili_urls)} 个 | YouTube: {len(youtube_urls)} 个 | Coursera: {len(coursera_urls)} 个 | "
+        f"[dim]Bilibili: {len(bilibili_tasks)} 个 | YouTube: {len(youtube_urls)} 个 | Coursera: {len(coursera_urls)} 个 | "
         f"并发: {max_concurrent}[/dim]\n"
     )
 
     # 构建任务列表
     tasks = []
-    for url in bilibili_urls:
-        tasks.append(("bilibili", url, BILIBILI_OUTPUT_DIR))
+    for url, output_dir in bilibili_tasks:
+        tasks.append(("bilibili", url, output_dir))
     for url in youtube_urls:
         tasks.append(("youtube", url, YOUTUBE_OUTPUT_DIR))
     for url in coursera_urls:
