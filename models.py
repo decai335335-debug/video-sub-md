@@ -7,6 +7,7 @@ from pydantic import BaseModel
 class DownloadResult(BaseModel):
     """通用下载结果"""
     platform: str = ""  # "bilibili" | "youtube"
+    source_url: str = ""
     video_id: str = ""
     title: str = ""
     status: str = ""  # success / skipped / failed / error

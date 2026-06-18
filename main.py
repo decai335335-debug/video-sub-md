@@ -561,10 +561,11 @@ def detect_platform(url: str) -> str:
     return "unknown"
 
 
-def normalize_result(raw_result, platform: str) -> DownloadResult:
+def normalize_result(raw_result, platform: str, source_url: str = "") -> DownloadResult:
     """把平台特定的结果对象转换为通用格式"""
     return DownloadResult(
         platform=platform,
+        source_url=source_url,
         video_id=getattr(raw_result, "bvid", "") or getattr(raw_result, "video_id", ""),
         title=getattr(raw_result, "title", ""),
         status=getattr(raw_result, "status", "error"),
@@ -582,7 +583,7 @@ async def download_bilibili_task(url: str, output_dir: Path, lang: Optional[str]
     if cookie:
         set_cookie(cookie)
     result = await asyncio.to_thread(bilibili_download, url, output_dir, "md", lang)
-    return normalize_result(result, "bilibili")
+    return normalize_result(result, "bilibili", source_url=url)
 
 
 def _sync_youtube_download(meta, output_dir: Path, lang: Optional[str]):
@@ -598,7 +599,7 @@ async def download_youtube_task(url: str, output_dir: Path, lang: Optional[str])
 
     meta = await asyncio.to_thread(fetch_metadata, url)
     result = await asyncio.to_thread(_sync_youtube_download, meta, output_dir, lang)
-    return normalize_result(result, "youtube")
+    return normalize_result(result, "youtube", source_url=url)
 
 
 async def download_coursera_task(url: str, output_dir: Path, lang: Optional[str]) -> DownloadResult:
@@ -616,6 +617,7 @@ async def download_coursera_task(url: str, output_dir: Path, lang: Optional[str]
     error = None if status == "success" else "Coursera course subtitles not found"
     return DownloadResult(
         platform="coursera",
+        source_url=url,
         video_id=result.course.course_id,
         title=result.course.title,
         status=status,
@@ -634,6 +636,80 @@ def platform_tag(platform: str) -> str:
     if platform == "coursera":
         return "[blue]Coursera[/blue]"
     return platform or "-"
+
+
+def _asr_output_dir_for(platform: str) -> Path:
+    if platform == "bilibili":
+        return BILIBILI_OUTPUT_DIR
+    if platform == "youtube":
+        return YOUTUBE_OUTPUT_DIR
+    return DEFAULT_OUTPUT_DIR / "ASR"
+
+
+def _maybe_run_asr_fallback(failed_results: List[DownloadResult], lang: Optional[str]) -> None:
+    """Ask once whether failed/no-subtitle videos should be transcribed from audio."""
+    candidates = [
+        r for r in failed_results
+        if r.platform in {"bilibili", "youtube"} and (r.source_url or r.video_id)
+    ]
+    if not candidates:
+        return
+
+    console.print()
+    console.print(
+        f"[yellow]检测到 {len(candidates)} 个 Bilibili/YouTube 视频没有成功拿到字幕。[/yellow]"
+    )
+    choice = input("是否下载音频并用本地 SenseVoice 识别？(a 识别 / b 跳过): ").strip().lower()
+    if choice != "a":
+        console.print("[dim]已跳过音频识别兜底[/dim]")
+        return
+
+    try:
+        from asr_fallback_module import DEFAULT_MODEL_PATH, SenseVoiceTranscriber, process_url
+    except Exception as exc:
+        console.print(f"[red]ASR 模块不可用: {exc}[/red]")
+        return
+
+    model_path = Path(os.environ.get("VIDEO_SUB_MD_ASR_MODEL") or os.environ.get("SENSEVOICE_MODEL_PATH") or DEFAULT_MODEL_PATH)
+    asr_lang = lang or "auto"
+
+    try:
+        transcriber = SenseVoiceTranscriber(model_path=model_path, device=os.environ.get("VIDEO_SUB_MD_ASR_DEVICE", "auto"))
+    except Exception as exc:
+        console.print(f"[red]加载 SenseVoice 模型失败: {exc}[/red]")
+        return
+
+    for r in candidates:
+        url = r.source_url
+        if not url and r.video_id:
+            if r.platform == "bilibili":
+                url = f"https://www.bilibili.com/video/{r.video_id}/"
+            elif r.platform == "youtube":
+                url = f"https://www.youtube.com/watch?v={r.video_id}"
+        if not url:
+            continue
+
+        try:
+            console.print(f"[cyan]ASR 兜底:[/cyan] {r.title or url}")
+            output_path = process_url(
+                url=url,
+                transcriber=transcriber,
+                output_dir=_asr_output_dir_for(r.platform),
+                language=asr_lang,
+                keep_audio=False,
+                cookie_file=None,
+                cookies_from_browser=os.environ.get("VIDEO_SUB_MD_ASR_COOKIES_FROM_BROWSER", ""),
+            )
+            r.status = "success"
+            r.language = f"ASR:{asr_lang}"
+            r.filepath = output_path
+            r.error = None
+            if not r.title:
+                r.title = output_path.stem
+            console.print(f"[green]  ✓ ASR 已生成:[/green] {output_path}")
+        except Exception as exc:
+            r.error = f"字幕下载失败；ASR 也失败: {exc}"
+            console.print(f"[red]  ✗ ASR 失败:[/red] {r.title or url} - {exc}")
 
 
 def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int, effective_cookie: str):
@@ -677,6 +753,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 coursera_expand_errors.append(
                     DownloadResult(
                         platform="coursera",
+                        source_url=url,
                         title=url[:80],
                         status="error",
                         error=str(exc),
@@ -728,6 +805,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 except Exception as e:
                     return DownloadResult(
                         platform=platform,
+                        source_url=url,
                         title=url[:50],
                         status="error",
                         error=str(e),
@@ -800,6 +878,19 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         console.print()
         for r in failed_results:
             console.print(f"[red]✗[/red] {platform_tag(r.platform)} {r.title or r.video_id or '未知'}: {r.error}")
+        _maybe_run_asr_fallback(failed_results, lang)
+        success = sum(1 for r in results if r.status == "success")
+        report = BatchReport(
+            total=len(results),
+            success=success,
+            failed=len(results) - success,
+            results=results,
+        )
+        success_results = [r for r in results if r.status == "success" and r.filepath]
+        still_failed = [r for r in results if r.status != "success" and r.error]
+        if len(still_failed) != len(failed_results):
+            console.print()
+            console.print(f"[dim]ASR 后结果: 成功 {report.success} / 失败 {report.failed} / 总计 {report.total}[/dim]")
 
     # CSV 报告
     _write_csv_report(report)
@@ -1003,10 +1094,11 @@ def _write_csv_report(report: BatchReport):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["platform", "video_id", "title", "status", "language", "filepath", "error"])
+        writer.writerow(["platform", "source_url", "video_id", "title", "status", "language", "filepath", "error"])
         for r in report.results:
             writer.writerow([
                 r.platform,
+                r.source_url,
                 r.video_id,
                 r.title,
                 r.status,
