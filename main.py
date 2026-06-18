@@ -712,6 +712,68 @@ def _maybe_run_asr_fallback(failed_results: List[DownloadResult], lang: Optional
             console.print(f"[red]  ✗ ASR 失败:[/red] {r.title or url} - {exc}")
 
 
+def _bilibili_video_url(bvid: str) -> str:
+    return f"https://www.bilibili.com/video/{bvid}/"
+
+
+def _dedupe_urls(urls: List[str]) -> List[str]:
+    seen = set()
+    unique = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
+def _expand_bilibili_playlists(urls: List[str]) -> List[str]:
+    """Ask whether Bilibili collections/seasons should be expanded to all videos."""
+    if not urls:
+        return urls
+
+    from core.bilibili.extractor import extract_bvid, extract_collection_info, is_collection_url
+    from core.bilibili.metadata import fetch_collection_videos, fetch_video_ugc_season
+
+    expanded: List[str] = []
+    for url in urls:
+        try:
+            title = ""
+            bvids: List[str] = []
+            current_bvid = extract_bvid(url) or ""
+
+            if is_collection_url(url):
+                collection_type, params = extract_collection_info(url)
+                bvids = fetch_collection_videos(collection_type, params)
+                title = f"{collection_type} {params.get('sid') or params.get('mlid') or ''}".strip()
+            elif current_bvid:
+                title, bvids = fetch_video_ugc_season(current_bvid)
+
+            if len(bvids) <= 1:
+                expanded.append(url)
+                continue
+
+            current_hint = ""
+            if current_bvid and current_bvid in bvids:
+                current_hint = f"当前视频位于第 {bvids.index(current_bvid) + 1}/{len(bvids)} 个"
+
+            console.print()
+            console.print(
+                f"[yellow]检测到 B站合集/播放列表[/yellow]: {title or '未命名'}，共 {len(bvids)} 个视频。"
+            )
+            if current_hint:
+                console.print(f"[dim]{current_hint}[/dim]")
+            choice = input("是否下载整个合集？(a 全部 / b 仅当前): ").strip().lower()
+            if choice == "a":
+                expanded.extend(_bilibili_video_url(bvid) for bvid in bvids)
+            else:
+                expanded.append(url)
+        except Exception as exc:
+            console.print(f"[yellow]播放列表检测失败，按单个视频处理: {url} ({exc})[/yellow]")
+            expanded.append(url)
+
+    return _dedupe_urls(expanded)
+
+
 def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int, effective_cookie: str):
     """处理单次下载任务"""
     # 过滤 typer 单命令模式下误传的命令名
@@ -732,6 +794,8 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
             coursera_urls.append(url)
         else:
             console.print(f"[yellow]⚠[/yellow] 无法识别平台，跳过: {url}")
+
+    bilibili_urls = _expand_bilibili_playlists(bilibili_urls)
 
     coursera_expand_errors = []
     if coursera_urls:

@@ -120,6 +120,29 @@ def fetch_video_meta(bvid: str) -> VideoMeta:
     )
 
 
+def fetch_video_ugc_season(bvid: str) -> tuple[str, List[str]]:
+    """Return the UGC season title and all episode BV ids for a normal video page."""
+    payload = _get_json(BILI_VIEW_API, {"bvid": bvid})
+    if payload.get("code") != 0:
+        raise RuntimeError(payload.get("message", "无法获取视频信息"))
+
+    data = payload.get("data", {})
+    season = data.get("ugc_season") or {}
+    if not season:
+        return "", []
+
+    bvids: List[str] = []
+    seen = set()
+    for section in season.get("sections") or []:
+        for episode in section.get("episodes") or []:
+            episode_bvid = episode.get("bvid")
+            if episode_bvid and episode_bvid not in seen:
+                seen.add(episode_bvid)
+                bvids.append(episode_bvid)
+
+    return str(season.get("title") or ""), bvids
+
+
 def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
     """获取视频可用字幕轨道列表。"""
     # 优先使用 wbi/v2 接口；B站核心接口已启用 WBI 签名
