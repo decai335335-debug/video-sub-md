@@ -1,12 +1,12 @@
 # video-sub-md — 一键批量下载视频字幕并 AI 深度分析
 
-从 Bilibili / YouTube 批量下载视频字幕为 Markdown，支持 Ctrl+点击在 Obsidian 中直接打开，并可调用 DeepSeek V4 自动生成四层深度内容分析 + 英中双语字幕翻译。
+从 Bilibili / YouTube / Coursera 批量下载视频字幕为 Markdown；Douyin 支持下载音频并用本地 SenseVoice 转写。支持 Ctrl+点击在 Obsidian 中直接打开，并可调用 DeepSeek V4 自动生成四层深度内容分析 + 英中双语字幕翻译。
 
 ---
 
 ## 1. 一句话定位
 
-**一键批量下载 Bilibili + YouTube 视频字幕为 Markdown，AI 自动生成深度分析笔记和双语字幕翻译。** 做视频知识管理时，不再需要手动复制粘贴字幕，也不再需要逐句整理笔记。
+**一键批量下载 Bilibili + YouTube + Coursera 字幕，或将 Douyin 视频转写为 Markdown，AI 自动生成深度分析笔记和双语字幕翻译。** 做视频知识管理时，不再需要手动复制粘贴字幕，也不再需要逐句整理笔记。
 
 ---
 
@@ -43,7 +43,7 @@
 
 | 功能 | 解决什么问题 |
 |------|-------------|
-| **混合链接输入** | 同时粘贴 B站和 YouTube 链接，自动识别平台分别处理，不用手动分类 |
+| **混合链接输入** | 同时粘贴 B站、YouTube、Coursera、Douyin 链接，自动识别平台分别处理，不用手动分类 |
 | **循环下载模式** | 下载完成后不退出，继续等待新链接输入，按 `q` 才退出，避免频繁重启程序 |
 | **批量并发下载** | 一次性处理多个视频，充分利用带宽，大幅提升效率 |
 | **智能语言选择** | 自动按优先级选择字幕语言（中文 > 英文 > 其他），减少手动配置 |
@@ -138,6 +138,7 @@ python main.py download
 ```
   > https://www.bilibili.com/video/BV1xx411c7mD
   > https://www.youtube.com/watch?v=dQw4w9WgXcQ
+  > https://www.douyin.com/jingxuan?modal_id=7632664889143627059
   >
 ```
 

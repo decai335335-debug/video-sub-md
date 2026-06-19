@@ -38,6 +38,7 @@ from models import DownloadResult, BatchReport
 console = Console(force_terminal=True)
 app = typer.Typer(add_completion=False)
 COURSERA_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Coursera"
+DOUYIN_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Douyin"
 
 # 导入翻译模块
 try:
@@ -556,6 +557,8 @@ def detect_platform(url: str) -> str:
         return "bilibili"
     if "youtube.com" in u or "youtu.be" in u:
         return "youtube"
+    if "douyin.com" in u:
+        return "douyin"
     if "coursera.org" in u or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", u):
         return "coursera"
     return "unknown"
@@ -627,6 +630,84 @@ async def download_coursera_task(url: str, output_dir: Path, lang: Optional[str]
     )
 
 
+def download_douyin_batch(urls: List[str], output_dir: Path, lang: Optional[str]) -> List[DownloadResult]:
+    """Download Douyin audio, transcribe with local SenseVoice, and write Markdown."""
+    if not urls:
+        return []
+
+    try:
+        from asr_fallback_module import DEFAULT_MODEL_PATH, SenseVoiceTranscriber, process_url
+        from core.douyin.extractor import extract_video_id, normalize_url
+    except Exception as exc:
+        return [
+            DownloadResult(
+                platform="douyin",
+                source_url=url,
+                title=url[:50],
+                status="error",
+                error=f"Douyin ASR module unavailable: {exc}",
+            )
+            for url in urls
+        ]
+
+    model_path = Path(os.environ.get("VIDEO_SUB_MD_ASR_MODEL") or os.environ.get("SENSEVOICE_MODEL_PATH") or DEFAULT_MODEL_PATH)
+    asr_lang = lang or "auto"
+
+    try:
+        transcriber = SenseVoiceTranscriber(model_path=model_path, device=os.environ.get("VIDEO_SUB_MD_ASR_DEVICE", "auto"))
+    except Exception as exc:
+        return [
+            DownloadResult(
+                platform="douyin",
+                source_url=url,
+                video_id=extract_video_id(url),
+                title=url[:50],
+                status="error",
+                error=f"Failed to load SenseVoice model: {exc}",
+            )
+            for url in urls
+        ]
+
+    results: List[DownloadResult] = []
+    for url in urls:
+        normalized = normalize_url(url)
+        video_id = extract_video_id(url)
+        try:
+            console.print(f"[cyan]Douyin ASR:[/cyan] {normalized}")
+            output_path = process_url(
+                url=normalized,
+                transcriber=transcriber,
+                output_dir=output_dir,
+                language=asr_lang,
+                keep_audio=False,
+                cookie_file=None,
+                cookies_from_browser=os.environ.get("VIDEO_SUB_MD_ASR_COOKIES_FROM_BROWSER", ""),
+            )
+            results.append(
+                DownloadResult(
+                    platform="douyin",
+                    source_url=normalized,
+                    video_id=video_id,
+                    title=output_path.stem,
+                    status="success",
+                    language=f"ASR:{asr_lang}",
+                    filepath=output_path,
+                )
+            )
+        except Exception as exc:
+            results.append(
+                DownloadResult(
+                    platform="douyin",
+                    source_url=normalized,
+                    video_id=video_id,
+                    title=normalized,
+                    status="error",
+                    error=str(exc),
+                )
+            )
+    return results
+
+
 def platform_tag(platform: str) -> str:
     """Rich label for result tables."""
     if platform == "bilibili":
@@ -635,6 +716,8 @@ def platform_tag(platform: str) -> str:
         return "[red]YouTube[/red]"
     if platform == "coursera":
         return "[blue]Coursera[/blue]"
+    if platform == "douyin":
+        return "[magenta]Douyin[/magenta]"
     return platform or "-"
 
 
@@ -643,6 +726,8 @@ def _asr_output_dir_for(platform: str) -> Path:
         return BILIBILI_OUTPUT_DIR
     if platform == "youtube":
         return YOUTUBE_OUTPUT_DIR
+    if platform == "douyin":
+        return DOUYIN_OUTPUT_DIR
     return DEFAULT_OUTPUT_DIR / "ASR"
 
 
@@ -805,6 +890,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     bilibili_urls = []
     youtube_urls = []
     coursera_urls = []
+    douyin_urls = []
     for url in urls:
         platform = detect_platform(url)
         if platform == "bilibili":
@@ -813,6 +899,8 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
             youtube_urls.append(url)
         elif platform == "coursera":
             coursera_urls.append(url)
+        elif platform == "douyin":
+            douyin_urls.append(url)
         else:
             console.print(f"[yellow]⚠[/yellow] 无法识别平台，跳过: {url}")
 
@@ -846,7 +934,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 )
         coursera_urls = expanded_coursera_urls
 
-    if not bilibili_tasks and not youtube_urls and not coursera_urls:
+    if not bilibili_tasks and not youtube_urls and not coursera_urls and not douyin_urls:
         console.print("[red]错误：没有有效的视频链接[/red]")
         if coursera_expand_errors:
             report = BatchReport(
@@ -901,6 +989,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         return results
 
     results = coursera_expand_errors + asyncio.run(_batch())
+    results.extend(download_douyin_batch(douyin_urls, DOUYIN_OUTPUT_DIR, lang))
 
     # 统计
     success = sum(1 for r in results if r.status == "success")

@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -83,6 +84,75 @@ def extract_bvid(url: str) -> str | None:
 
 def is_bilibili_url(url: str) -> bool:
     return "bilibili.com" in url.lower() or bool(extract_bvid(url))
+
+
+def extract_douyin_video_id(url: str) -> str | None:
+    """Extract Douyin video id from /video/{id} or jingxuan?modal_id={id} URLs."""
+    if not url:
+        return None
+    patterns = [
+        r"douyin\.com/video/(\d+)",
+        r"[?&]modal_id=(\d+)",
+        r"[?&]aweme_id=(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qs(parsed.query)
+    for key in ("modal_id", "aweme_id"):
+        values = query.get(key)
+        if values and values[0].isdigit():
+            return values[0]
+    return None
+
+
+def is_douyin_url(url: str) -> bool:
+    return "douyin.com" in (url or "").lower()
+
+
+def normalize_douyin_url(url: str) -> str:
+    """Convert Douyin modal URLs to the direct video URL that yt-dlp can handle."""
+    if not is_douyin_url(url):
+        return url
+    video_id = extract_douyin_video_id(url)
+    if video_id:
+        return f"https://www.douyin.com/video/{video_id}"
+    return url
+
+
+def _format_filesize(fmt: dict[str, Any]) -> int:
+    size = fmt.get("filesize") or fmt.get("filesize_approx") or 0
+    try:
+        return int(size)
+    except (TypeError, ValueError):
+        return 0
+
+
+def select_douyin_format(info: dict[str, Any]) -> str | None:
+    """Pick a small audio-capable Douyin format to avoid downloading huge originals."""
+    formats = info.get("formats") or []
+    candidates: list[dict[str, Any]] = []
+    for fmt in formats:
+        format_id = str(fmt.get("format_id") or "")
+        if not format_id or str(fmt.get("acodec") or "none") == "none":
+            continue
+        if fmt.get("protocol") in {"mhtml"}:
+            continue
+        candidates.append(fmt)
+
+    if not candidates:
+        return None
+
+    def sort_key(fmt: dict[str, Any]) -> tuple[int, int, int]:
+        size = _format_filesize(fmt)
+        height = int(fmt.get("height") or 0)
+        tbr = int(fmt.get("tbr") or 0)
+        return (size if size > 0 else 10**12, height, tbr)
+
+    return str(min(candidates, key=sort_key).get("format_id") or "")
 
 
 def download_bilibili_audio(url: str, work_dir: Path) -> VideoAudio:
@@ -170,6 +240,8 @@ def download_audio(
     if is_bilibili_url(url):
         return download_bilibili_audio(url, work_dir)
 
+    normalized_url = normalize_douyin_url(url)
+    is_douyin = is_douyin_url(normalized_url)
     work_dir.mkdir(parents=True, exist_ok=True)
     ydl_opts: dict[str, Any] = {
         "format": "bestaudio/best",
@@ -184,7 +256,7 @@ def download_audio(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://www.bilibili.com/",
+            "Referer": "https://www.douyin.com/" if is_douyin else "https://www.bilibili.com/",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         },
     }
@@ -193,8 +265,17 @@ def download_audio(
     if cookies_from_browser:
         ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
 
+    if is_douyin:
+        probe_opts = dict(ydl_opts)
+        probe_opts["skip_download"] = True
+        with YoutubeDL(probe_opts) as ydl:
+            probe_info = ydl.extract_info(normalized_url, download=False)
+        format_id = select_douyin_format(probe_info)
+        if format_id:
+            ydl_opts["format"] = format_id
+
     with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+        info = ydl.extract_info(normalized_url, download=True)
 
     source_path = find_downloaded_media(info, work_dir)
     video_id = str(info.get("id") or source_path.stem)
