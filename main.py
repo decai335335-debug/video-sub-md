@@ -801,6 +801,10 @@ def _bilibili_video_url(bvid: str) -> str:
     return f"https://www.bilibili.com/video/{bvid}/"
 
 
+def _bilibili_video_page_url(bvid: str, page: int) -> str:
+    return f"https://www.bilibili.com/video/{bvid}/?p={page}"
+
+
 def _dedupe_urls(urls: List[str]) -> List[str]:
     seen = set()
     unique = []
@@ -835,14 +839,15 @@ def _expand_bilibili_playlists(urls: List[str]) -> List[tuple[str, Path]]:
     if not urls:
         return []
 
-    from core.bilibili.extractor import extract_bvid, extract_collection_info, is_collection_url
-    from core.bilibili.metadata import fetch_collection_videos, fetch_video_ugc_season
+    from core.bilibili.extractor import extract_bvid, extract_collection_info, extract_page_index, is_collection_url
+    from core.bilibili.metadata import fetch_collection_videos, fetch_video_meta, fetch_video_ugc_season
 
     expanded: List[tuple[str, Path]] = []
     for url in urls:
         try:
             title = ""
             bvids: List[str] = []
+            page_urls: List[str] = []
             current_bvid = extract_bvid(url) or ""
 
             if is_collection_url(url):
@@ -851,26 +856,38 @@ def _expand_bilibili_playlists(urls: List[str]) -> List[tuple[str, Path]]:
                 title = f"{collection_type} {params.get('sid') or params.get('mlid') or ''}".strip()
             elif current_bvid:
                 title, bvids = fetch_video_ugc_season(current_bvid)
+                if len(bvids) <= 1:
+                    meta = fetch_video_meta(current_bvid)
+                    if len(meta.pages) > 1:
+                        title = meta.title
+                        page_urls = [_bilibili_video_page_url(current_bvid, page.page) for page in meta.pages]
 
-            if len(bvids) <= 1:
+            item_count = len(page_urls) if page_urls else len(bvids)
+            if item_count <= 1:
                 expanded.append((url, BILIBILI_OUTPUT_DIR))
                 continue
 
             current_hint = ""
             if current_bvid and current_bvid in bvids:
                 current_hint = f"当前视频位于第 {bvids.index(current_bvid) + 1}/{len(bvids)} 个"
+            elif page_urls:
+                current_page = extract_page_index(url)
+                current_hint = f"当前分 P 位于第 {current_page}/{len(page_urls)} 个"
 
             console.print()
             console.print(
-                f"[yellow]检测到 B站合集/播放列表[/yellow]: {title or '未命名'}，共 {len(bvids)} 个视频。"
+                f"[yellow]检测到 B站合集/播放列表/分P选集[/yellow]: {title or '未命名'}，共 {item_count} 个视频。"
             )
             if current_hint:
                 console.print(f"[dim]{current_hint}[/dim]")
-            choice = input("是否下载整个合集？(a 全部 / b 仅当前): ").strip().lower()
+            choice = input("是否下载全部？(a 全部 / b 仅当前): ").strip().lower()
             if choice == "a":
                 playlist_dir = BILIBILI_OUTPUT_DIR / _safe_folder_name(title, "Bilibili播放列表")
-                expanded.extend((_bilibili_video_url(bvid), playlist_dir) for bvid in bvids)
-                console.print(f"[dim]合集将保存到: {playlist_dir}[/dim]")
+                if page_urls:
+                    expanded.extend((page_url, playlist_dir) for page_url in page_urls)
+                else:
+                    expanded.extend((_bilibili_video_url(bvid), playlist_dir) for bvid in bvids)
+                console.print(f"[dim]将保存到: {playlist_dir}[/dim]")
             else:
                 expanded.append((url, BILIBILI_OUTPUT_DIR))
         except Exception as exc:
