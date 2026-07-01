@@ -62,6 +62,27 @@ def lecture_segments_to_paragraphs(segments: list[CourseraSubtitleSegment]) -> l
     return merge_short_paragraphs(paragraphs)
 
 
+def srt_time_to_compact(value: str) -> str:
+    match = re.match(r"(?:(\d+):)?(\d{2}):(\d{2})", str(value or "").strip())
+    if not match:
+        return "00:00"
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def lecture_segments_to_timestamped_lines(segments: list[CourseraSubtitleSegment]) -> list[str]:
+    lines: list[str] = []
+    for segment in segments:
+        text = clean_text(segment.text)
+        if text:
+            lines.append(f"`{srt_time_to_compact(segment.start)}` {text}")
+    return lines
+
+
 def merge_short_paragraphs(paragraphs: list[str], min_chars: int = 80) -> list[str]:
     merged: list[str] = []
     for paragraph in paragraphs:
@@ -126,12 +147,12 @@ def course_to_markdown(course: CourseraCourse, language: str) -> str:
             lines.extend([f"> Download failed: {lecture.error}", ""])
             continue
 
-        paragraphs = lecture_segments_to_paragraphs(lecture.segments)
-        if not paragraphs:
+        subtitle_lines = lecture_segments_to_timestamped_lines(lecture.segments)
+        if not subtitle_lines:
             lines.extend(["> No subtitle text found.", ""])
             continue
 
-        lines.extend(paragraphs)
+        lines.extend(subtitle_lines)
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"

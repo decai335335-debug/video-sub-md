@@ -1,5 +1,6 @@
 """字幕格式转换"""
 
+from html import escape
 from datetime import timedelta
 from pathlib import Path
 from typing import List
@@ -49,7 +50,23 @@ def build_txt(body: List[SubtitleItem]) -> str:
     return "\n".join(item.content.strip() for item in body if item.content.strip())
 
 
-def build_markdown(result: SubtitleResult, include_timestamp: bool = True) -> str:
+def build_bilibili_embed_placeholder(result: SubtitleResult) -> str:
+    """Build the Obsidian media embed placeholder for Bilibili videos."""
+    original_url = result.url or f"https://www.bilibili.com/video/{result.bvid}"
+    embed_id = f"bilibili-{result.bvid.lower()}"
+    return f'''<div class="media-embed-placeholder" data-embed-id="{escape(embed_id, quote=True)}" data-platform="bilibili" data-video-id="{escape(result.bvid, quote=True)}" data-start-time="" data-is-short="false" data-original-url="{escape(original_url, quote=True)}">
+\t\t\t<div class="media-embed-placeholder-content">
+\t\t\t\t<div class="media-embed-placeholder-icon">📺</div>
+\t\t\t\t<div class="media-embed-placeholder-text">
+\t\t\t\t\t<div class="media-embed-placeholder-title">Bilibili 视频</div>
+\t\t\t\t\t<div class="media-embed-placeholder-desc">滚动文档时将在浮窗播放</div>
+\t\t\t\t</div>
+\t\t\t\t<button class="media-embed-placeholder-play">▶ 播放</button>
+\t\t\t</div>
+\t\t</div>'''
+
+
+def build_markdown(result: SubtitleResult, include_timestamp: bool = False) -> str:
     """构建 Markdown 格式字幕。
     
     头部格式与 YouTube 保持一致：
@@ -88,6 +105,8 @@ def build_markdown(result: SubtitleResult, include_timestamp: bool = True) -> st
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     lines.append(f"**提取时间:** {now}")
     lines.append("")
+    lines.append(build_bilibili_embed_placeholder(result))
+    lines.append("")
     
     # 分隔线
     lines.append("---")
@@ -117,7 +136,7 @@ def save_subtitle(result: SubtitleResult, output_path: Path, fmt: str = "md") ->
         content = build_txt(result.body)
         suffix = ".txt"
     else:
-        content = build_markdown(result)
+        content = build_markdown(result, include_timestamp=True)
         suffix = ".md"
 
     # 直接拼接后缀，不使用 with_suffix（避免中文路径下的 bug）

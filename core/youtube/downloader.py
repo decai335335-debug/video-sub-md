@@ -13,6 +13,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from core.youtube.models import VideoMeta, DownloadResult
 from core.youtube.formatter import transcript_to_md, transcript_to_bilingual_md
+from core.naming import add_date_prefix
 from config import (
     RETRY_ATTEMPTS,
     RETRY_BACKOFF_MIN,
@@ -116,7 +117,7 @@ def download_one(
         md_content = transcript_to_md(meta, raw_data, lang_code)
 
         # 生成文件名：优先用标题，重名则加 ID
-        base_name = _safe_filename(meta.title, meta.video_id)
+        base_name = add_date_prefix(_safe_filename(meta.title, meta.video_id))
         filepath = output_dir / f"{base_name}.md"
         counter = 1
         while filepath.exists():
@@ -231,7 +232,7 @@ def download_bilingual_one(
         md_content = transcript_to_bilingual_md(meta, en_data, zh_data, en_lang, zh_lang)
 
         # 4. 保存
-        base_name = _safe_filename(meta.title, meta.video_id) + "_双语"
+        base_name = add_date_prefix(_safe_filename(meta.title, meta.video_id) + "_双语")
         filepath = output_dir / f"{base_name}.md"
         counter = 1
         while filepath.exists():

@@ -13,6 +13,7 @@ class DownloadResult(BaseModel):
     status: str = ""  # success / skipped / failed / error
     language: Optional[str] = None
     filepath: Optional[Path] = None
+    output_dir: Optional[Path] = None
     error: Optional[str] = None
 
 

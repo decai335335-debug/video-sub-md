@@ -12,11 +12,12 @@ import re
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 
 from config import FILENAME_BAD_CHARS
+from core.naming import add_date_prefix
 from core.coursera.extractor import build_lecture_url, extract_collection_slug, extract_course_slug
 from core.coursera.formatter import course_to_markdown, parse_srt
 from core.coursera.models import CourseraCourse, CourseraDownloadResult, CourseraLecture
@@ -85,7 +86,14 @@ class CourseraDownloader:
 
         parsed = urlparse(value if "://" in value else f"https://www.coursera.org/learn/{value}")
         if parsed.path.startswith("/search"):
-            raise ValueError("Coursera search pages are not downloadable. Paste course, specialization, or certificate URLs.")
+            query = parse_qs(parsed.query).get("query") or parse_qs(parsed.query).get("q")
+            search_query = query[0] if query else ""
+            if search_query:
+                return self.search_course_slugs(search_query, limit=5)
+            return self.course_slugs_from_search_page(value, limit=20)
+
+        if "://" not in value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
+            return self.search_course_slugs(value, limit=1)
 
         try:
             return [extract_course_slug(value)]
@@ -93,17 +101,68 @@ class CourseraDownloader:
             pass
 
         kind, slug = extract_collection_slug(value)
-        data = self._get_json(
-            f"{COURSERA_API}/onDemandSpecializations.v1/",
-            params={"q": "slug", "slug": slug, "fields": "name,slug,courseIds"},
-        )
+        try:
+            data = self._get_json(
+                f"{COURSERA_API}/onDemandSpecializations.v1/",
+                params={"q": "slug", "slug": slug, "fields": "name,slug,courseIds"},
+            )
+        except Exception:
+            return self.search_course_slugs(slug.replace("-", " "), limit=5)
         elements = data.get("elements") or []
         if not elements:
             raise RuntimeError(f"Coursera {kind} not found or not accessible: {slug}")
 
         course_ids = elements[0].get("courseIds") or []
-        course_slugs = [self._get_course_slug_by_id(course_id) for course_id in course_ids]
-        return [course_slug for course_slug in course_slugs if course_slug]
+        course_slugs = []
+        for course_id in course_ids:
+            try:
+                course_slug = self._get_course_slug_by_id(course_id)
+            except Exception:
+                continue
+            if course_slug:
+                course_slugs.append(course_slug)
+        course_slugs = self.filter_accessible_slugs(course_slugs)
+        return course_slugs or self.search_course_slugs(slug.replace("-", " "), limit=5)
+
+    def search_course_slugs(self, query: str, limit: int = 5) -> list[str]:
+        """Search Coursera's public search page and return likely course slugs."""
+        cleaned = clean_coursera_query(query)
+        if not cleaned:
+            raise ValueError(
+                "Coursera search pages need a query. Paste a course URL or a searchable course title."
+            )
+
+        html = self._get_text(
+            f"{COURSERA_ORIGIN}/search?query={requests.utils.quote(cleaned)}"
+        )
+        slugs = extract_learn_slugs_from_html(html)
+        ranked = self.filter_accessible_slugs(rank_slugs_for_query(slugs, cleaned))
+        if not ranked:
+            raise RuntimeError(
+                f"Coursera search found no course links for: {cleaned}. "
+                "Open the search result in a browser and paste a /learn/... course URL."
+            )
+        return ranked[:limit]
+
+    def filter_accessible_slugs(self, slugs: list[str]) -> list[str]:
+        accessible = []
+        for slug in slugs:
+            try:
+                self._get_course_materials(slug)
+            except Exception:
+                continue
+            accessible.append(slug)
+        return accessible or slugs
+
+    def course_slugs_from_search_page(self, url: str, limit: int = 20) -> list[str]:
+        html = self._get_text(url)
+        slugs = extract_learn_slugs_from_html(html)
+        if not slugs:
+            raise RuntimeError(
+                "Coursera search page has no course links. Paste a course, specialization, "
+                "professional certificate, or a search URL with a query= parameter."
+            )
+        return slugs[:limit]
 
     def get_course(self, url_or_slug: str, preferred_lang: str = "en") -> CourseraCourse:
         slug = extract_course_slug(url_or_slug)
@@ -128,6 +187,7 @@ class CourseraDownloader:
         }
 
         lectures: list[CourseraLecture] = []
+        non_video_items: list[CourseraLecture] = []
         index = 1
         for module_id in elements[0].get("moduleIds", []):
             module = modules.get(module_id, {})
@@ -135,7 +195,26 @@ class CourseraDownloader:
                 lesson = lessons.get(lesson_id, {})
                 for item_id in lesson.get("itemIds", []):
                     item = items.get(item_id, {})
+                    item_slug = item.get("slug") or item_id
+                    item_title = clean_title(item.get("name") or item_id)
                     if not self._is_lecture(item):
+                        content_type = ((item.get("contentSummary") or {}).get("typeName") or "non-video")
+                        non_video_items.append(CourseraLecture(
+                            index=len(non_video_items) + 1,
+                            course_id=course_id,
+                            module_id=module_id,
+                            module_name=clean_title(module.get("name") or f"Module {len(non_video_items) + 1}"),
+                            lesson_id=lesson_id,
+                            lesson_name=clean_title(lesson.get("name") or ""),
+                            item_id=item_id,
+                            item_slug=item_slug,
+                            title=item_title,
+                            url=f"{COURSERA_ORIGIN}/learn/{slug}/supplement/{item_id}/{item_slug}",
+                            duration_ms=int(item.get("timeCommitment") or 0),
+                            subtitles={},
+                            selected_lang="",
+                            error=f"Non-video Coursera item: {content_type}",
+                        ))
                         continue
                     subtitles, selected_lang = self._get_lecture_subtitles(
                         course_id, item_id, preferred_lang
@@ -148,14 +227,17 @@ class CourseraDownloader:
                         lesson_id=lesson_id,
                         lesson_name=clean_title(lesson.get("name") or ""),
                         item_id=item_id,
-                        item_slug=item.get("slug") or item_id,
-                        title=clean_title(item.get("name") or item_id),
-                        url=build_lecture_url(slug, item_id, item.get("slug") or item_id),
+                        item_slug=item_slug,
+                        title=item_title,
+                        url=build_lecture_url(slug, item_id, item_slug),
                         duration_ms=int(item.get("timeCommitment") or 0),
                         subtitles=subtitles,
                         selected_lang=selected_lang,
                     ))
                     index += 1
+
+        if not lectures and non_video_items:
+            lectures = non_video_items
 
         return CourseraCourse(
             slug=slug,
@@ -192,7 +274,7 @@ class CourseraDownloader:
                 failed += 1
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        filename = safe_filename(course.title or course.slug) + ".md"
+        filename = add_date_prefix(safe_filename(course.title or course.slug)) + ".md"
         output_path = unique_path(output_dir / filename)
         output_path.write_text(course_to_markdown(course, preferred_lang), encoding="utf-8")
 
@@ -305,6 +387,47 @@ def safe_filename(value: str) -> str:
 
 def clean_title(value: str) -> str:
     return re.sub(r"[\u2028\u2029\r\n\t]+", " ", str(value or "")).strip()
+
+
+def clean_coursera_query(value: str) -> str:
+    query = unquote(str(value or "")).strip()
+    query = re.sub(r"^coursera\s+", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(r"\s+", " ", query)
+    return query
+
+
+def extract_learn_slugs_from_html(html: str) -> list[str]:
+    slugs = []
+    seen = set()
+    for match in re.finditer(r"/learn/([A-Za-z0-9_-]+)", html or ""):
+        slug = match.group(1)
+        if slug not in seen:
+            seen.add(slug)
+            slugs.append(slug)
+    return slugs
+
+
+def rank_slugs_for_query(slugs: list[str], query: str) -> list[str]:
+    query_tokens = slug_tokens(query)
+
+    def score(slug: str) -> tuple[int, int, int]:
+        tokens = slug_tokens(slug)
+        overlap = len(query_tokens & tokens)
+        phrase_bonus = 1 if "-".join(query_tokens) in slug.lower() else 0
+        generic_penalty = 1 if slug in {"ai-for-everyone", "prompt-engineering", "financial-markets-global"} else 0
+        return (overlap + phrase_bonus * 2 - generic_penalty, overlap, -len(slug))
+
+    ranked = sorted(slugs, key=score, reverse=True)
+    return [slug for slug in ranked if score(slug)[0] > 0] or ranked
+
+
+def slug_tokens(value: str) -> set[str]:
+    stopwords = {"coursera", "course", "project", "the", "and", "for", "your", "you", "with"}
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(value or "").lower())
+        if token and token not in stopwords
+    }
 
 
 def unique_path(path: Path) -> Path:

@@ -18,6 +18,7 @@ from core.bilibili.models import (
 from core.bilibili.metadata import fetch_video_meta, fetch_subtitle_tracks
 from core.bilibili.formatter import save_subtitle
 from core.bilibili.extractor import extract_page_index, extract_bvid
+from core.naming import add_date_prefix
 
 
 def _safe_filename(name: str) -> str:
@@ -145,6 +146,7 @@ def download_one(
             base_name = f"{_safe_filename(base_name)}_{_safe_filename(page.part)}"
         if track["lan_doc"]:
             base_name = f"{base_name}_{_safe_filename(track['lan_doc'])}"
+        base_name = add_date_prefix(base_name)
 
         output_path = output_dir / base_name
         filepath = save_subtitle(result, output_path, fmt=fmt)

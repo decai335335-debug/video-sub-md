@@ -13,6 +13,8 @@ def extract_course_slug(url_or_slug: str) -> str:
         raise ValueError("Coursera URL or course slug is empty")
 
     if "://" not in value and "/" not in value:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
+            raise ValueError(f"Not a Coursera course slug: {url_or_slug}")
         return value
 
     parsed = urlparse(value)

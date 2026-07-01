@@ -3,7 +3,7 @@
 """video-sub-md — 统一视频字幕下载器（Bilibili + YouTube + Coursera）"""
 
 import asyncio
-import csv
+import json
 import os
 import re
 import urllib.parse
@@ -34,6 +34,7 @@ from config import (
     DEFAULT_AI_MODE,
 )
 from models import DownloadResult, BatchReport
+from core.naming import add_date_prefix
 
 console = Console(force_terminal=True)
 app = typer.Typer(add_completion=False)
@@ -564,7 +565,7 @@ def detect_platform(url: str) -> str:
     return "unknown"
 
 
-def normalize_result(raw_result, platform: str, source_url: str = "") -> DownloadResult:
+def normalize_result(raw_result, platform: str, source_url: str = "", output_dir: Path | None = None) -> DownloadResult:
     """把平台特定的结果对象转换为通用格式"""
     return DownloadResult(
         platform=platform,
@@ -574,6 +575,7 @@ def normalize_result(raw_result, platform: str, source_url: str = "") -> Downloa
         status=getattr(raw_result, "status", "error"),
         language=getattr(raw_result, "language", None) or None,
         filepath=getattr(raw_result, "filepath", None),
+        output_dir=output_dir,
         error=getattr(raw_result, "error", None),
     )
 
@@ -586,7 +588,7 @@ async def download_bilibili_task(url: str, output_dir: Path, lang: Optional[str]
     if cookie:
         set_cookie(cookie)
     result = await asyncio.to_thread(bilibili_download, url, output_dir, "md", lang)
-    return normalize_result(result, "bilibili", source_url=url)
+    return normalize_result(result, "bilibili", source_url=url, output_dir=output_dir)
 
 
 def _sync_youtube_download(meta, output_dir: Path, lang: Optional[str]):
@@ -602,7 +604,7 @@ async def download_youtube_task(url: str, output_dir: Path, lang: Optional[str])
 
     meta = await asyncio.to_thread(fetch_metadata, url)
     result = await asyncio.to_thread(_sync_youtube_download, meta, output_dir, lang)
-    return normalize_result(result, "youtube", source_url=url)
+    return normalize_result(result, "youtube", source_url=url, output_dir=output_dir)
 
 
 async def download_coursera_task(url: str, output_dir: Path, lang: Optional[str]) -> DownloadResult:
@@ -626,6 +628,7 @@ async def download_coursera_task(url: str, output_dir: Path, lang: Optional[str]
         status=status,
         language=lang or "en",
         filepath=result.output_path,
+        output_dir=output_dir,
         error=error,
     )
 
@@ -646,6 +649,7 @@ def download_douyin_batch(urls: List[str], output_dir: Path, lang: Optional[str]
                 title=url[:50],
                 status="error",
                 error=f"Douyin ASR module unavailable: {exc}",
+                output_dir=output_dir,
             )
             for url in urls
         ]
@@ -664,6 +668,7 @@ def download_douyin_batch(urls: List[str], output_dir: Path, lang: Optional[str]
                 title=url[:50],
                 status="error",
                 error=f"Failed to load SenseVoice model: {exc}",
+                output_dir=output_dir,
             )
             for url in urls
         ]
@@ -692,6 +697,7 @@ def download_douyin_batch(urls: List[str], output_dir: Path, lang: Optional[str]
                     status="success",
                     language=f"ASR:{asr_lang}",
                     filepath=output_path,
+                    output_dir=output_dir,
                 )
             )
         except Exception as exc:
@@ -703,6 +709,7 @@ def download_douyin_batch(urls: List[str], output_dir: Path, lang: Optional[str]
                     title=normalized,
                     status="error",
                     error=str(exc),
+                    output_dir=output_dir,
                 )
             )
     return results
@@ -779,7 +786,7 @@ def _maybe_run_asr_fallback(failed_results: List[DownloadResult], lang: Optional
             output_path = process_url(
                 url=url,
                 transcriber=transcriber,
-                output_dir=_asr_output_dir_for(r.platform),
+                output_dir=r.output_dir or _asr_output_dir_for(r.platform),
                 language=asr_lang,
                 keep_audio=False,
                 cookie_file=None,
@@ -820,7 +827,20 @@ def _safe_folder_name(name: str, fallback: str = "playlist") -> str:
     for ch in '\\/:*?"<>|':
         cleaned = cleaned.replace(ch, "_")
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._")
-    return (cleaned or fallback)[:120]
+    return add_date_prefix((cleaned or fallback)[:120])
+
+
+def _prompt_batch_folder() -> str:
+    name = input("本批是否新建统一文件夹？输入名称创建，直接回车跳过: ").strip()
+    if not name:
+        return ""
+    folder = _safe_folder_name(name, "batch")
+    console.print(f"[dim]本批将保存到各平台目录下的文件夹: {folder}[/dim]")
+    return folder
+
+
+def _with_batch_folder(base_dir: Path, batch_folder: str) -> Path:
+    return base_dir / batch_folder if batch_folder else base_dir
 
 
 def _dedupe_bilibili_tasks(tasks: List[tuple[str, Path]]) -> List[tuple[str, Path]]:
@@ -834,7 +854,7 @@ def _dedupe_bilibili_tasks(tasks: List[tuple[str, Path]]) -> List[tuple[str, Pat
     return unique
 
 
-def _expand_bilibili_playlists(urls: List[str]) -> List[tuple[str, Path]]:
+def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[tuple[str, Path]]:
     """Ask whether Bilibili collections/seasons should be expanded to all videos."""
     if not urls:
         return []
@@ -864,7 +884,7 @@ def _expand_bilibili_playlists(urls: List[str]) -> List[tuple[str, Path]]:
 
             item_count = len(page_urls) if page_urls else len(bvids)
             if item_count <= 1:
-                expanded.append((url, BILIBILI_OUTPUT_DIR))
+                expanded.append((url, output_base_dir))
                 continue
 
             current_hint = ""
@@ -882,17 +902,17 @@ def _expand_bilibili_playlists(urls: List[str]) -> List[tuple[str, Path]]:
                 console.print(f"[dim]{current_hint}[/dim]")
             choice = input("是否下载全部？(a 全部 / b 仅当前): ").strip().lower()
             if choice == "a":
-                playlist_dir = BILIBILI_OUTPUT_DIR / _safe_folder_name(title, "Bilibili播放列表")
+                playlist_dir = output_base_dir / _safe_folder_name(title, "Bilibili播放列表")
                 if page_urls:
                     expanded.extend((page_url, playlist_dir) for page_url in page_urls)
                 else:
                     expanded.extend((_bilibili_video_url(bvid), playlist_dir) for bvid in bvids)
                 console.print(f"[dim]将保存到: {playlist_dir}[/dim]")
             else:
-                expanded.append((url, BILIBILI_OUTPUT_DIR))
+                expanded.append((url, output_base_dir))
         except Exception as exc:
             console.print(f"[yellow]播放列表检测失败，按单个视频处理: {url} ({exc})[/yellow]")
-            expanded.append((url, BILIBILI_OUTPUT_DIR))
+            expanded.append((url, output_base_dir))
 
     return _dedupe_bilibili_tasks(expanded)
 
@@ -921,7 +941,14 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         else:
             console.print(f"[yellow]⚠[/yellow] 无法识别平台，跳过: {url}")
 
-    bilibili_tasks = _expand_bilibili_playlists(bilibili_urls)
+    has_valid_urls = bool(bilibili_urls or youtube_urls or coursera_urls or douyin_urls)
+    batch_folder = _prompt_batch_folder() if has_valid_urls else ""
+    bilibili_output_base = _with_batch_folder(BILIBILI_OUTPUT_DIR, batch_folder)
+    youtube_output_base = _with_batch_folder(YOUTUBE_OUTPUT_DIR, batch_folder)
+    coursera_output_base = _with_batch_folder(COURSERA_OUTPUT_DIR, batch_folder)
+    douyin_output_base = _with_batch_folder(DOUYIN_OUTPUT_DIR, batch_folder)
+
+    bilibili_tasks = _expand_bilibili_playlists(bilibili_urls, bilibili_output_base)
 
     coursera_expand_errors = []
     if coursera_urls:
@@ -947,6 +974,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                         title=url[:80],
                         status="error",
                         error=str(exc),
+                        output_dir=coursera_output_base,
                     )
                 )
         coursera_urls = expanded_coursera_urls
@@ -960,12 +988,12 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 failed=len(coursera_expand_errors),
                 results=coursera_expand_errors,
             )
-            _write_csv_report(report)
+            _write_download_report(report)
             return report
         return
 
     console.print(
-        f"[dim]Bilibili: {len(bilibili_tasks)} 个 | YouTube: {len(youtube_urls)} 个 | Coursera: {len(coursera_urls)} 个 | "
+        f"[dim]Bilibili: {len(bilibili_tasks)} 个 | YouTube: {len(youtube_urls)} 个 | Coursera: {len(coursera_urls)} 个 | Douyin: {len(douyin_urls)} 个 | "
         f"并发: {max_concurrent}[/dim]\n"
     )
 
@@ -974,9 +1002,9 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     for url, output_dir in bilibili_tasks:
         tasks.append(("bilibili", url, output_dir))
     for url in youtube_urls:
-        tasks.append(("youtube", url, YOUTUBE_OUTPUT_DIR))
+        tasks.append(("youtube", url, youtube_output_base))
     for url in coursera_urls:
-        tasks.append(("coursera", url, COURSERA_OUTPUT_DIR))
+        tasks.append(("coursera", url, coursera_output_base))
 
     # 异步批量下载
     async def _batch():
@@ -999,6 +1027,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                         title=url[:50],
                         status="error",
                         error=str(e),
+                        output_dir=output_dir,
                     )
 
         coros = [_run(p, u, o) for p, u, o in tasks]
@@ -1006,7 +1035,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         return results
 
     results = coursera_expand_errors + asyncio.run(_batch())
-    results.extend(download_douyin_batch(douyin_urls, DOUYIN_OUTPUT_DIR, lang))
+    results.extend(download_douyin_batch(douyin_urls, douyin_output_base, lang))
 
     # 统计
     success = sum(1 for r in results if r.status == "success")
@@ -1084,7 +1113,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
             console.print(f"[dim]ASR 后结果: 成功 {report.success} / 失败 {report.failed} / 总计 {report.total}[/dim]")
 
     # CSV 报告
-    _write_csv_report(report)
+    _write_download_report(report)
 
     # 询问是否生成分析
     ai_mode_label = "本地模型" if _current_ai_mode == "local" else "DeepSeek API"
@@ -1280,24 +1309,53 @@ def download(
             return
 
 
-def _write_csv_report(report: BatchReport):
-    path = Path("E:/Obsidian/主仓库/11-subtitles") / f"_download_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+def _write_download_report(report: BatchReport):
+    path = DEFAULT_OUTPUT_DIR / "_download_report.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(["platform", "source_url", "video_id", "title", "status", "language", "filepath", "error"])
-        for r in report.results:
-            writer.writerow([
-                r.platform,
-                r.source_url,
-                r.video_id,
-                r.title,
-                r.status,
-                r.language or "",
-                str(r.filepath) if r.filepath else "",
-                r.error or "",
-            ])
-    console.print(f"\n[dim]报告已保存: {path}[/dim]")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run = {
+        "run_id": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "created_at": now,
+        "summary": {
+            "total": report.total,
+            "success": report.success,
+            "failed": report.failed,
+        },
+        "results": [
+            {
+                "platform": r.platform,
+                "source_url": r.source_url,
+                "video_id": r.video_id,
+                "title": r.title,
+                "status": r.status,
+                "language": r.language or "",
+                "filepath": str(r.filepath) if r.filepath else "",
+                "output_dir": str(r.output_dir) if r.output_dir else "",
+                "error": r.error or "",
+            }
+            for r in report.results
+        ],
+    }
+
+    data = {"schema_version": 1, "runs": []}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data.update(loaded)
+                if not isinstance(data.get("runs"), list):
+                    data["runs"] = []
+        except json.JSONDecodeError:
+            backup = path.with_suffix(f".broken_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            path.rename(backup)
+            console.print(f"[yellow]旧报告 JSON 解析失败，已备份为: {backup}[/yellow]")
+
+    data["schema_version"] = 1
+    data["updated_at"] = now
+    data.setdefault("runs", []).append(run)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    console.print(f"\n[dim]报告已追加保存: {path}[/dim]")
 
 
 if __name__ == "__main__":

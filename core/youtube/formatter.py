@@ -1,36 +1,50 @@
-"""将字幕 JSON 转为 Markdown（无时间轴）"""
+"""Convert YouTube transcript data to Markdown with timestamps."""
+
 import datetime
+from html import escape
+
 from core.youtube.models import VideoMeta
 
 
-# 自动生成的噪音标签，直接丢弃
-NOISE_TAGS = {"[Music]", "[music]", "[Music Playing]", "[音楽]", "[Music]"}
+NOISE_TAGS = {"[Music]", "[music]", "[Music Playing]", "[音乐]", "[Applause]", "[Laughter]"}
 
 
 def _clean_text(text: str) -> str:
-    """清理并返回有效文本，噪音标签返回空字符串"""
-    text = text.strip()
+    text = str(text or "").strip().replace("\n", " ")
     if not text or text in NOISE_TAGS:
         return ""
     return text
 
 
-def _merge_paragraphs(paragraphs: list[str]) -> list[str]:
-    """合并过短的段落（小于 40 字符的并入上一段）"""
-    merged = []
-    for para in paragraphs:
-        if merged and len(merged[-1]) < 40:
-            merged[-1] += " " + para
-        else:
-            merged.append(para)
-    return merged
+def _format_time(seconds: float) -> str:
+    total = max(0, int(seconds or 0))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def build_youtube_embed_placeholder(meta: VideoMeta) -> str:
+    """Build the Obsidian media embed placeholder for YouTube videos."""
+    original_url = meta.url or f"https://www.youtube.com/watch?v={meta.video_id}"
+    embed_id = f"youtube-{meta.video_id.lower()}"
+    return f'''<div class="media-embed-placeholder" data-embed-id="{escape(embed_id, quote=True)}" data-platform="youtube" data-video-id="{escape(meta.video_id, quote=True)}" data-start-time="" data-is-short="false" data-original-url="{escape(original_url, quote=True)}">
+\t\t\t<div class="media-embed-placeholder-content">
+\t\t\t\t<div class="media-embed-placeholder-icon">▶</div>
+\t\t\t\t<div class="media-embed-placeholder-text">
+\t\t\t\t\t<div class="media-embed-placeholder-title">YouTube 视频</div>
+\t\t\t\t\t<div class="media-embed-placeholder-desc">滚动文档时将在浮窗播放</div>
+\t\t\t\t</div>
+\t\t\t\t<button class="media-embed-placeholder-play">▶ 播放</button>
+\t\t\t</div>
+\t\t</div>'''
 
 
 def _build_header(meta: VideoMeta, lang_code: str) -> str:
-    """构建 Markdown 头部元数据"""
     duration_str = ""
     if meta.duration:
-        m, s = divmod(meta.duration, 60)
+        m, s = divmod(int(meta.duration), 60)
         h, m = divmod(m, 60)
         duration_str = f"**时长:** {h:02d}:{m:02d}:{s:02d}\n"
 
@@ -43,38 +57,24 @@ def _build_header(meta: VideoMeta, lang_code: str) -> str:
 **语言:** {lang_code}  
 {duration_str}**提取时间:** {now}
 
+{build_youtube_embed_placeholder(meta)}
+
 ---
 
 """
 
 
 def transcript_to_md(meta: VideoMeta, transcript: list[dict], lang_code: str) -> str:
-    """
-    将 youtube-transcript-api 返回的 JSON 数组转为 Markdown。
-    无时间轴，按语义分段。
-    """
-    paragraphs = []
-    current_sentences = []
-
+    """Render each YouTube transcript segment as a timestamped Markdown line."""
+    lines = []
     for seg in transcript:
         text = _clean_text(seg.get("text", ""))
         if not text:
             continue
+        start = float(seg.get("start") or 0)
+        lines.append(f"`{_format_time(start)}` {text}")
 
-        current_sentences.append(text)
-
-        # 遇到句子结束符，尝试分段
-        if text.endswith((".", "?", "!", "。", "？", "！", '"', "'")):
-            paragraphs.append(" ".join(current_sentences))
-            current_sentences = []
-
-    if current_sentences:
-        paragraphs.append(" ".join(current_sentences))
-
-    merged = _merge_paragraphs(paragraphs)
-    body = "\n\n".join(merged)
-
-    return _build_header(meta, lang_code) + body
+    return _build_header(meta, lang_code) + "\n".join(lines)
 
 
 def transcript_to_bilingual_md(
@@ -84,45 +84,31 @@ def transcript_to_bilingual_md(
     en_lang: str,
     zh_lang: str,
 ) -> str:
-    """
-    将英中双语字幕转为 Markdown。
-    每句英文下面紧跟中文翻译，无时间轴。
-    如果两句字幕数量不一致，以较短的为准。
-    """
+    """Render bilingual transcript pairs while keeping the source timestamp."""
     pairs = []
     min_len = min(len(en_transcript), len(zh_transcript))
 
     for i in range(min_len):
         en_text = _clean_text(en_transcript[i].get("text", ""))
         zh_text = _clean_text(zh_transcript[i].get("text", ""))
-
         if not en_text:
             continue
-
-        # 跳过纯噪音片段
         if en_text in NOISE_TAGS and (not zh_text or zh_text in NOISE_TAGS):
             continue
-
-        # 合并连续短句（如果上一段很短，合并到同一段）
-        if pairs and len(pairs[-1][0]) < 60:
-            pairs[-1] = (pairs[-1][0] + " " + en_text, pairs[-1][1] + " " + zh_text)
+        start = float(en_transcript[i].get("start") or zh_transcript[i].get("start") or 0)
+        if zh_text:
+            pairs.append(f"`{_format_time(start)}` {en_text}\n{zh_text}")
         else:
-            pairs.append((en_text, zh_text))
-
-    # 构建 body：每段英文 + 空行 + 中文
-    paragraphs = []
-    for en, zh in pairs:
-        paragraphs.append(f"{en}\n\n{zh}")
-
-    body = "\n\n".join(paragraphs)
+            pairs.append(f"`{_format_time(start)}` {en_text}")
 
     duration_str = ""
     if meta.duration:
-        m, s = divmod(meta.duration, 60)
+        m, s = divmod(int(meta.duration), 60)
         h, m = divmod(m, 60)
         duration_str = f"**时长:** {h:02d}:{m:02d}:{s:02d}\n"
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    body = "\n\n".join(pairs)
 
     return f"""# {meta.title}
 
@@ -130,6 +116,8 @@ def transcript_to_bilingual_md(
 **链接:** {meta.url}  
 **语言:** {en_lang} + {zh_lang}（双语）  
 {duration_str}**提取时间:** {now}
+
+{build_youtube_embed_placeholder(meta)}
 
 ---
 

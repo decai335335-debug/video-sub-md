@@ -395,3 +395,28 @@ video-sub-md/
         ├── metadata.py        # 元数据获取
         └── models.py          # YouTube 数据模型
 ```
+# 2026-06-30 Date-prefixed output names
+
+- Added `core/naming.py` with shared `YYMMDD_` prefix helpers.
+- New subtitle files from Bilibili, YouTube, Coursera, Douyin/ASR now use names like `260630_title.md`.
+- Content-derived folders such as Bilibili playlist folders and cooking batch category folders now use the same date prefix.
+- Existing names that already start with `NNNNNN_` are left unchanged to avoid duplicate prefixes.
+
+# 2026-06-30 Timestamped subtitle Markdown
+
+- Markdown subtitle output now keeps timeline lines by default.
+- Bilibili, YouTube, Coursera, and ASR fallback output use compact backtick timestamps such as `` `00:00` text``.
+- ASR first tries model sentence timestamps, then falls back to approximate timestamps based on video duration.
+
+# 2026-07-01 Playlist-aware ASR fallback output
+
+- Added `DownloadResult.output_dir` so failed subtitle downloads keep their original target directory.
+- Bilibili playlist videos that fall back to ASR now save into the same playlist folder as videos with embedded subtitles.
+- Download reports include `output_dir` for easier path debugging.
+
+# 2026-07-01 Optional batch folder per platform
+
+- After link parsing, the CLI asks for an optional batch folder name.
+- Empty input keeps the existing platform directories unchanged.
+- A name such as `class` becomes `260701_class` and is created under each platform directory.
+- Bilibili playlist folders are created under that batch folder, so ASR fallback and embedded subtitles stay together.
