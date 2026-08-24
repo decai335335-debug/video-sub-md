@@ -17,6 +17,7 @@ from config import (
     MAX_RETRIES,
     RETRY_DELAY,
 )
+from core.bilibili.http import create_bilibili_session
 from core.bilibili.models import VideoMeta, VideoPage
 from core.bilibili.wbi_sign import sign_params
 
@@ -67,19 +68,22 @@ def _get_json(url: str, params: Optional[dict] = None) -> dict:
     """带重试的 GET 请求。"""
     last_error = None
     headers = build_headers(_global_cookie)
-    for attempt in range(MAX_RETRIES):
+    session = create_bilibili_session()
+    timeout = REQUEST_TIMEOUT
+    retries = max(MAX_RETRIES, 3)
+    for attempt in range(retries):
         try:
-            resp = requests.get(
+            resp = session.get(
                 url,
                 params=params,
                 headers=headers,
-                timeout=REQUEST_TIMEOUT,
+                timeout=timeout,
             )
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             last_error = e
-            if attempt < MAX_RETRIES - 1:
+            if attempt < retries - 1:
                 time.sleep(RETRY_DELAY * (attempt + 1))
     raise last_error or RuntimeError(f"请求失败: {url}")
 

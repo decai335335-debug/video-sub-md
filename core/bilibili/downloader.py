@@ -18,6 +18,7 @@ from core.bilibili.models import (
 from core.bilibili.metadata import fetch_video_meta, fetch_subtitle_tracks
 from core.bilibili.formatter import save_subtitle
 from core.bilibili.extractor import extract_page_index, extract_bvid
+from core.bilibili.http import create_bilibili_session
 from core.naming import add_date_prefix
 
 
@@ -50,7 +51,8 @@ def _pick_preferred_track(tracks: List[dict], preferred_lang: Optional[str] = No
 
 def _fetch_subtitle_body(url: str) -> List[SubtitleItem]:
     """下载字幕 JSON 并解析。"""
-    resp = requests.get(url, timeout=30)
+    session = create_bilibili_session()
+    resp = session.get(url, timeout=20)
     resp.raise_for_status()
     data = resp.json()
     body = data.get("body", [])

@@ -13,10 +13,13 @@ from typing import Dict
 
 import requests
 
+from core.bilibili.http import create_bilibili_session
+
 
 def _get_wbi_keys() -> tuple:
     """获取最新的 WBI  img_key 和 sub_key。"""
-    resp = requests.get(
+    session = create_bilibili_session()
+    resp = session.get(
         "https://api.bilibili.com/x/web-interface/nav",
         headers={
             "User-Agent": (
@@ -25,7 +28,7 @@ def _get_wbi_keys() -> tuple:
             ),
             "Referer": "https://www.bilibili.com",
         },
-        timeout=10,
+        timeout=8,
     )
     resp.raise_for_status()
     data = resp.json().get("data", {})

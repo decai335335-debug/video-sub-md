@@ -80,6 +80,19 @@ def _choose_ai_mode() -> str:
     return _current_ai_mode
 
 
+def _prompt_required_choice(prompt: str, valid_choices: set[str]) -> str:
+    """Prompt until the user explicitly enters one of the allowed choices."""
+    normalized_choices = {choice.lower() for choice in valid_choices}
+    while True:
+        choice = input(prompt).strip().lower()
+        if choice in normalized_choices:
+            return choice
+        if not choice:
+            console.print("[dim]空回车已忽略，请输入有效选项。[/dim]")
+        else:
+            console.print(f"[yellow]请输入: {' / '.join(sorted(normalized_choices))}[/yellow]")
+
+
 def _clean_summary_markdown(text: str) -> str:
     """清洗 AI 输出的 Markdown，修复常见格式问题以确保正确渲染
     
@@ -598,11 +611,18 @@ def _sync_youtube_download(meta, output_dir: Path, lang: Optional[str]):
     return asyncio.run(download_with_delay(meta, output_dir, lang))
 
 
-async def download_youtube_task(url: str, output_dir: Path, lang: Optional[str]) -> DownloadResult:
+async def download_youtube_task(
+    url: str,
+    output_dir: Path,
+    lang: Optional[str],
+    youtube_cookie_file: Optional[Path] = None,
+) -> DownloadResult:
     """异步包装 youtube 下载"""
-    from core.youtube.metadata import fetch_metadata
+    from core.youtube import metadata as youtube_metadata
 
-    meta = await asyncio.to_thread(fetch_metadata, url)
+    if youtube_cookie_file:
+        youtube_metadata.YDLP_OPTS["cookiefile"] = str(youtube_cookie_file)
+    meta = await asyncio.to_thread(youtube_metadata.fetch_metadata, url)
     result = await asyncio.to_thread(_sync_youtube_download, meta, output_dir, lang)
     return normalize_result(result, "youtube", source_url=url, output_dir=output_dir)
 
@@ -751,7 +771,7 @@ def _maybe_run_asr_fallback(failed_results: List[DownloadResult], lang: Optional
     console.print(
         f"[yellow]检测到 {len(candidates)} 个 Bilibili/YouTube 视频没有成功拿到字幕。[/yellow]"
     )
-    choice = input("是否下载音频并用本地 SenseVoice 识别？(a 识别 / b 跳过): ").strip().lower()
+    choice = _prompt_required_choice("是否下载音频并用本地 SenseVoice 识别？(a 识别 / b 跳过): ", {"a", "b"})
     if choice != "a":
         console.print("[dim]已跳过音频识别兜底[/dim]")
         return
@@ -831,8 +851,13 @@ def _safe_folder_name(name: str, fallback: str = "playlist") -> str:
 
 
 def _prompt_batch_folder() -> str:
-    name = input("本批是否新建统一文件夹？输入名称创建，直接回车跳过: ").strip()
+    console.print("[bold]本批是否新建统一文件夹？[/bold]")
+    console.print("[dim]输入名称创建；直接回车准备跳过。[/dim]")
+    name = input("  文件夹名> ").strip()
     if not name:
+        name = input("  确认跳过？直接回车确认，或现在输入文件夹名称> ").strip()
+    if not name:
+        console.print("[dim]本批不新建统一文件夹。[/dim]")
         return ""
     folder = _safe_folder_name(name, "batch")
     console.print(f"[dim]本批将保存到各平台目录下的文件夹: {folder}[/dim]")
@@ -854,6 +879,100 @@ def _dedupe_bilibili_tasks(tasks: List[tuple[str, Path]]) -> List[tuple[str, Pat
     return unique
 
 
+def _youtube_playlist_id(url: str) -> str:
+    """Return the YouTube playlist id carried by either playlist or watch URLs."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.netloc.lower() not in {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "music.youtube.com",
+        }:
+            return ""
+        return (urllib.parse.parse_qs(parsed.query).get("list") or [""])[0].strip()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _expand_youtube_playlists(
+    urls: List[str],
+    output_base_dir: Path,
+    youtube_cookie_file: Optional[Path] = None,
+) -> List[tuple[str, Path]]:
+    """Expand YouTube playlist/watch-with-list URLs into ordinary video tasks."""
+    if not urls:
+        return []
+
+    import yt_dlp
+
+    console.print("[dim]正在检测 YouTube 播放列表...[/dim]")
+    expanded: List[tuple[str, Path]] = []
+    playlist_cache: dict[str, tuple[str, List[str]]] = {}
+
+    for url in urls:
+        playlist_id = _youtube_playlist_id(url)
+        if not playlist_id:
+            expanded.append((url, output_base_dir))
+            continue
+
+        try:
+            if playlist_id not in playlist_cache:
+                playlist_url = "https://www.youtube.com/playlist?" + urllib.parse.urlencode(
+                    {"list": playlist_id}
+                )
+                ydl_opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "extract_flat": "in_playlist",
+                    "ignoreerrors": True,
+                }
+                if youtube_cookie_file:
+                    ydl_opts["cookiefile"] = str(youtube_cookie_file)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(playlist_url, download=False)
+
+                if not info:
+                    raise RuntimeError("yt-dlp 没有返回播放列表信息")
+
+                video_urls: List[str] = []
+                for entry in info.get("entries") or []:
+                    if not entry:
+                        continue
+                    video_id = str(entry.get("id") or "").strip()
+                    if re.fullmatch(r"[0-9A-Za-z_-]{11}", video_id):
+                        video_urls.append(f"https://www.youtube.com/watch?v={video_id}")
+
+                video_urls = _dedupe_urls(video_urls)
+                if not video_urls:
+                    raise RuntimeError("播放列表中没有可解析的视频")
+
+                playlist_title = str(info.get("title") or f"YouTube播放列表_{playlist_id}")
+                playlist_cache[playlist_id] = (playlist_title, video_urls)
+
+            playlist_title, video_urls = playlist_cache[playlist_id]
+            playlist_dir = output_base_dir / _safe_folder_name(playlist_title, "YouTube播放列表")
+            console.print(
+                f"[yellow]检测到 YouTube 播放列表[/yellow]: {playlist_title}，共 {len(video_urls)} 个视频。"
+            )
+            console.print(f"[dim]将保存到: {playlist_dir}[/dim]")
+            expanded.extend((video_url, playlist_dir) for video_url in video_urls)
+        except Exception as exc:
+            # A watch URL can still be processed as one video if playlist lookup fails.
+            try:
+                from core.youtube.extractor import extract_video_id
+
+                video_id = extract_video_id(url)
+                fallback_url = f"https://www.youtube.com/watch?v={video_id}"
+            except ValueError:
+                fallback_url = url
+            console.print(f"[yellow]YouTube 播放列表检测失败，按单个链接处理: {url} ({exc})[/yellow]")
+            expanded.append((fallback_url, output_base_dir))
+
+    return _dedupe_bilibili_tasks(expanded)
+
+
 def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[tuple[str, Path]]:
     """Ask whether Bilibili collections/seasons should be expanded to all videos."""
     if not urls:
@@ -862,7 +981,9 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
     from core.bilibili.extractor import extract_bvid, extract_collection_info, extract_page_index, is_collection_url
     from core.bilibili.metadata import fetch_collection_videos, fetch_video_meta, fetch_video_ugc_season
 
+    console.print("[dim]正在检测 B站合集/播放列表/分P选集...[/dim]")
     expanded: List[tuple[str, Path]] = []
+    current_only_for_rest = False
     for url in urls:
         try:
             title = ""
@@ -876,14 +997,18 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
                 title = f"{collection_type} {params.get('sid') or params.get('mlid') or ''}".strip()
             elif current_bvid:
                 title, bvids = fetch_video_ugc_season(current_bvid)
-                if len(bvids) <= 1:
-                    meta = fetch_video_meta(current_bvid)
-                    if len(meta.pages) > 1:
-                        title = meta.title
-                        page_urls = [_bilibili_video_page_url(current_bvid, page.page) for page in meta.pages]
+                meta = fetch_video_meta(current_bvid)
+                if len(meta.pages) > 1:
+                    title = meta.title
+                    bvids = []
+                    page_urls = [_bilibili_video_page_url(current_bvid, page.page) for page in meta.pages]
 
             item_count = len(page_urls) if page_urls else len(bvids)
             if item_count <= 1:
+                expanded.append((url, output_base_dir))
+                continue
+
+            if current_only_for_rest:
                 expanded.append((url, output_base_dir))
                 continue
 
@@ -900,7 +1025,7 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
             )
             if current_hint:
                 console.print(f"[dim]{current_hint}[/dim]")
-            choice = input("是否下载全部？(a 全部 / b 仅当前): ").strip().lower()
+            choice = input("是否下载全部？(a 全部 / b 仅当前 / q 本批都仅当前): ").strip().lower()
             if choice == "a":
                 playlist_dir = output_base_dir / _safe_folder_name(title, "Bilibili播放列表")
                 if page_urls:
@@ -909,6 +1034,9 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
                     expanded.extend((_bilibili_video_url(bvid), playlist_dir) for bvid in bvids)
                 console.print(f"[dim]将保存到: {playlist_dir}[/dim]")
             else:
+                if choice == "q":
+                    current_only_for_rest = True
+                    console.print("[dim]本批后续 B站合集/播放列表/分P选集将自动仅下载当前视频。[/dim]")
                 expanded.append((url, output_base_dir))
         except Exception as exc:
             console.print(f"[yellow]播放列表检测失败，按单个视频处理: {url} ({exc})[/yellow]")
@@ -917,7 +1045,13 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
     return _dedupe_bilibili_tasks(expanded)
 
 
-def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int, effective_cookie: str):
+def _process_downloads(
+    urls: List[str],
+    lang: Optional[str],
+    max_concurrent: int,
+    effective_cookie: str,
+    youtube_cookie_file: Optional[Path] = None,
+):
     """处理单次下载任务"""
     # 过滤 typer 单命令模式下误传的命令名
     if urls and urls[0] == "download":
@@ -949,6 +1083,11 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     douyin_output_base = _with_batch_folder(DOUYIN_OUTPUT_DIR, batch_folder)
 
     bilibili_tasks = _expand_bilibili_playlists(bilibili_urls, bilibili_output_base)
+    youtube_tasks = _expand_youtube_playlists(
+        youtube_urls,
+        youtube_output_base,
+        youtube_cookie_file=youtube_cookie_file,
+    )
 
     coursera_expand_errors = []
     if coursera_urls:
@@ -979,7 +1118,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                 )
         coursera_urls = expanded_coursera_urls
 
-    if not bilibili_tasks and not youtube_urls and not coursera_urls and not douyin_urls:
+    if not bilibili_tasks and not youtube_tasks and not coursera_urls and not douyin_urls:
         console.print("[red]错误：没有有效的视频链接[/red]")
         if coursera_expand_errors:
             report = BatchReport(
@@ -993,7 +1132,7 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
         return
 
     console.print(
-        f"[dim]Bilibili: {len(bilibili_tasks)} 个 | YouTube: {len(youtube_urls)} 个 | Coursera: {len(coursera_urls)} 个 | Douyin: {len(douyin_urls)} 个 | "
+        f"[dim]Bilibili: {len(bilibili_tasks)} 个 | YouTube: {len(youtube_tasks)} 个 | Coursera: {len(coursera_urls)} 个 | Douyin: {len(douyin_urls)} 个 | "
         f"并发: {max_concurrent}[/dim]\n"
     )
 
@@ -1001,27 +1140,35 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
     tasks = []
     for url, output_dir in bilibili_tasks:
         tasks.append(("bilibili", url, output_dir))
-    for url in youtube_urls:
-        tasks.append(("youtube", url, youtube_output_base))
+    for url, output_dir in youtube_tasks:
+        tasks.append(("youtube", url, output_dir))
     for url in coursera_urls:
         tasks.append(("coursera", url, coursera_output_base))
 
     # 异步批量下载
     async def _batch():
         semaphore = asyncio.Semaphore(max_concurrent)
-        results: List[DownloadResult] = []
+        results: List[Optional[DownloadResult]] = [None] * len(tasks)
+        total_tasks = len(tasks)
 
-        async def _run(platform: str, url: str, output_dir: Path):
+        async def _run(index: int, platform: str, url: str, output_dir: Path):
             async with semaphore:
                 await asyncio.sleep(0.3)
                 try:
                     if platform == "bilibili":
-                        return await download_bilibili_task(url, output_dir, lang, effective_cookie)
-                    if platform == "youtube":
-                        return await download_youtube_task(url, output_dir, lang)
-                    return await download_coursera_task(url, output_dir, lang)
+                        result = await download_bilibili_task(url, output_dir, lang, effective_cookie)
+                    elif platform == "youtube":
+                        result = await download_youtube_task(
+                            url,
+                            output_dir,
+                            lang,
+                            youtube_cookie_file=youtube_cookie_file,
+                        )
+                    else:
+                        result = await download_coursera_task(url, output_dir, lang)
+                    return index, result
                 except Exception as e:
-                    return DownloadResult(
+                    return index, DownloadResult(
                         platform=platform,
                         source_url=url,
                         title=url[:50],
@@ -1030,9 +1177,16 @@ def _process_downloads(urls: List[str], lang: Optional[str], max_concurrent: int
                         output_dir=output_dir,
                     )
 
-        coros = [_run(p, u, o) for p, u, o in tasks]
-        results = await asyncio.gather(*coros)
-        return results
+        coros = [_run(i, p, u, o) for i, (p, u, o) in enumerate(tasks)]
+        completed = 0
+        print(f"下载进度：0/{total_tasks}", end="", flush=True)
+        for coro in asyncio.as_completed(coros):
+            index, result = await coro
+            results[index] = result
+            completed += 1
+            print(f"\r下载进度：{completed}/{total_tasks}", end="", flush=True)
+        print()
+        return [r for r in results if r is not None]
 
     results = coursera_expand_errors + asyncio.run(_batch())
     results.extend(download_douyin_batch(douyin_urls, douyin_output_base, lang))
@@ -1196,6 +1350,16 @@ def download(
     lang: Optional[str] = typer.Option(None, "--lang", "-l", help="指定语言代码，如 zh, en"),
     max_concurrent: int = typer.Option(MAX_CONCURRENT, "--max-concurrent", "-c", help="最大并发数"),
     cookie: Optional[str] = typer.Option(None, "--cookie", help="Bilibili SESSDATA Cookie"),
+    youtube_cookies: Optional[Path] = typer.Option(
+        None,
+        "--youtube-cookies",
+        help="YouTube Netscape Cookie 文件路径",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+    ),
 ):
     """下载 Bilibili + YouTube + Coursera 字幕为 Markdown，支持混合链接，按 q 退出"""
     console.print(Panel.fit(
@@ -1225,8 +1389,18 @@ def download(
         if not cookie_value:
             return False
         try:
-            from core.bilibili.metadata import _get_json
-            nav = _get_json("https://api.bilibili.com/x/web-interface/nav")
+            import requests
+            from config import build_headers
+            from core.bilibili.http import create_bilibili_session
+
+            session = create_bilibili_session()
+            resp = session.get(
+                "https://api.bilibili.com/x/web-interface/nav",
+                headers=build_headers(cookie_value),
+                timeout=5,
+            )
+            resp.raise_for_status()
+            nav = resp.json()
             return bool(nav.get("data", {}).get("isLogin"))
         except Exception:
             return False
@@ -1250,10 +1424,23 @@ def download(
         else:
             console.print(f"[dim]已设置登录 Cookie (原始 {raw_len} 字符, 有效 {clean_len} 字符)[/dim]")
 
-        # 校验 Cookie 是否有效
-        if not _check_cookie_validity(effective_cookie):
-            console.print("[yellow]警告: 当前 Cookie 未通过 B站登录校验，部分需要登录的字幕（含大部分 AI 生成字幕）可能无法获取[/yellow]")
-            console.print("[dim]提示: 请从浏览器开发者工具复制最新的 SESSDATA 值，或设置 BILI_COOKIE 环境变量[/dim]")
+        # 默认跳过启动联网校验，避免未开 VPN/代理失效/运营商直连慢时卡在启动页。
+        if os.environ.get("VIDEO_SUB_MD_CHECK_BILI_COOKIE", "").strip() == "1":
+            console.print("[dim]正在快速校验 B站 Cookie...[/dim]")
+            if not _check_cookie_validity(effective_cookie):
+                console.print("[yellow]警告: 当前 Cookie 未通过 B站登录校验，部分需要登录的字幕（含大部分 AI 生成字幕）可能无法获取[/yellow]")
+                console.print("[dim]提示: 请从浏览器开发者工具复制最新的 SESSDATA 值，或设置 BILI_COOKIE 环境变量[/dim]")
+
+        console.print("[dim]如需临时更新 B站 SESSDATA，输入 1 后回车；直接回车继续。[/dim]")
+        if input("  更新 SESSDATA? (1/回车)> ").strip() == "1":
+            user_cookie = input("  新 SESSDATA> ").strip()
+            if user_cookie:
+                effective_cookie = user_cookie
+                set_cookie(effective_cookie)
+                import core.bilibili.metadata as _meta
+                console.print(f"[dim]已更新本次运行的登录 Cookie ({len(_meta._global_cookie)} 字符)[/dim]")
+            else:
+                console.print("[dim]未输入新 SESSDATA，继续使用原 Cookie[/dim]")
     else:
         console.print("[dim]提示：如需下载登录后才能看到的字幕，请输入 SESSDATA（直接回车则以游客身份运行）：[/dim]")
         user_cookie = input("  SESSDATA> ").strip()
@@ -1300,7 +1487,13 @@ def download(
             console.print(f"[blue]ℹ[/blue] 解析到 {len(current_urls)} 个链接\n")
 
         # 处理下载
-        report = _process_downloads(current_urls, lang, max_concurrent, effective_cookie)
+        report = _process_downloads(
+            current_urls,
+            lang,
+            max_concurrent,
+            effective_cookie,
+            youtube_cookie_file=youtube_cookies,
+        )
         
         # 检查是否有失败（非循环模式下）
         if cli_mode:

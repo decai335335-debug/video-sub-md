@@ -12,6 +12,7 @@ Example:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,6 +32,12 @@ from rich.console import Console
 import torch
 from yt_dlp import YoutubeDL
 from core.naming import add_date_prefix
+
+try:
+    from core.bilibili.http import create_bilibili_session
+except Exception:  # pragma: no cover - standalone fallback
+    def create_bilibili_session() -> requests.Session:
+        return requests.Session()
 
 try:
     from funasr import AutoModel
@@ -85,7 +93,12 @@ def extract_bvid(url: str) -> str | None:
 
 
 def is_bilibili_url(url: str) -> bool:
-    return "bilibili.com" in url.lower() or bool(extract_bvid(url))
+    value = (url or "").strip()
+    if "bilibili.com" in value.lower():
+        return True
+    # A YouTube video id may also begin with "BV".  Only treat a standalone
+    # BV id as Bilibili; do not inspect arbitrary URLs for a BV-like substring.
+    return bool(re.fullmatch(r"BV[0-9A-Za-z]+", value))
 
 
 def extract_douyin_video_id(url: str) -> str | None:
@@ -113,6 +126,11 @@ def extract_douyin_video_id(url: str) -> str | None:
 
 def is_douyin_url(url: str) -> bool:
     return "douyin.com" in (url or "").lower()
+
+
+def is_youtube_url(url: str) -> bool:
+    lowered = (url or "").lower()
+    return "youtube.com" in lowered or "youtu.be" in lowered
 
 
 def normalize_douyin_url(url: str) -> str:
@@ -314,7 +332,9 @@ def download_bilibili_audio(url: str, work_dir: Path) -> VideoAudio:
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
 
-    view_resp = requests.get(
+    session = create_bilibili_session()
+
+    view_resp = session.get(
         "https://api.bilibili.com/x/web-interface/view",
         params={"bvid": bvid},
         headers=headers,
@@ -327,7 +347,7 @@ def download_bilibili_audio(url: str, work_dir: Path) -> VideoAudio:
     data = view_data["data"]
     cid = data["cid"]
 
-    play_resp = requests.get(
+    play_resp = session.get(
         "https://api.bilibili.com/x/player/playurl",
         params={"bvid": bvid, "cid": cid, "fnval": 16, "fourk": 1},
         headers=headers,
@@ -365,7 +385,8 @@ def download_bilibili_audio(url: str, work_dir: Path) -> VideoAudio:
 
 
 def download_stream(url: str, output_path: Path, headers: dict[str, str]) -> None:
-    with requests.get(url, headers=headers, timeout=60, stream=True) as resp:
+    session = create_bilibili_session()
+    with session.get(url, headers=headers, timeout=60, stream=True) as resp:
         resp.raise_for_status()
         with output_path.open("wb") as fh:
             for chunk in resp.iter_content(chunk_size=1024 * 1024):
@@ -387,6 +408,7 @@ def download_audio(
 
     normalized_url = normalize_douyin_url(url)
     is_douyin = is_douyin_url(normalized_url)
+    is_youtube = "youtube.com" in normalized_url.casefold() or "youtu.be" in normalized_url.casefold()
     work_dir.mkdir(parents=True, exist_ok=True)
     ydl_opts: dict[str, Any] = {
         "format": "bestaudio/best",
@@ -401,7 +423,13 @@ def download_audio(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://www.douyin.com/" if is_douyin else "https://www.bilibili.com/",
+            "Referer": (
+                "https://www.douyin.com/"
+                if is_douyin
+                else "https://www.youtube.com/"
+                if is_youtube
+                else "https://www.bilibili.com/"
+            ),
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         },
     }
@@ -555,12 +583,25 @@ class SenseVoiceTranscriber:
         )
 
     def transcribe(self, wav_path: Path, language: str = "auto") -> tuple[str, list[dict[str, Any]]]:
+        duration = probe_media_duration(wav_path)
+        if duration > 3 * 60 * 60:
+            return self._transcribe_chunked(wav_path, language, duration)
+        return self._generate(wav_path, language)
+
+    def _generate(self, wav_path: Path, language: str) -> tuple[str, list[dict[str, Any]]]:
+        # FunASR batches VAD segments until their padded duration reaches this
+        # budget. A larger default keeps a 12 GB GPU busier without loading a
+        # second model process. It remains configurable for smaller GPUs.
+        batch_size_s = max(
+            30,
+            int(os.environ.get("VIDEO_SUB_MD_ASR_BATCH_SIZE_S", "120")),
+        )
         res = self.model.generate(
             input=str(wav_path),
             cache={},
             language=language,
             use_itn=True,
-            batch_size_s=60,
+            batch_size_s=batch_size_s,
             merge_vad=True,
             merge_length_s=15,
         )
@@ -570,6 +611,59 @@ class SenseVoiceTranscriber:
         if rich_transcription_postprocess is not None:
             text = rich_transcription_postprocess(text)
         return clean_sensevoice_text(text), res
+
+    def _transcribe_chunked(
+        self,
+        wav_path: Path,
+        language: str,
+        duration: int,
+        chunk_seconds: int = 60 * 60,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Transcribe very long audio one hour at a time to bound RAM/CUDA work."""
+        texts: list[str] = []
+        combined_results: list[dict[str, Any]] = []
+        chunk_count = (duration + chunk_seconds - 1) // chunk_seconds
+        with tempfile.TemporaryDirectory(prefix="sensevoice-chunks-", dir=wav_path.parent) as temp_dir:
+            temp_root = Path(temp_dir)
+            for chunk_index, offset in enumerate(range(0, duration, chunk_seconds), 1):
+                chunk_path = temp_root / f"chunk-{chunk_index:04d}.wav"
+                console.print(
+                    f"[dim]SenseVoice long-audio chunk {chunk_index}/{chunk_count} "
+                    f"at {format_time(offset)}[/dim]"
+                )
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "error",
+                        "-y",
+                        "-ss",
+                        str(offset),
+                        "-t",
+                        str(min(chunk_seconds, duration - offset)),
+                        "-i",
+                        str(wav_path),
+                        "-ac",
+                        "1",
+                        "-ar",
+                        "16000",
+                        "-sample_fmt",
+                        "s16",
+                        str(chunk_path),
+                    ],
+                    check=True,
+                )
+                chunk_text, chunk_results = self._generate(chunk_path, language)
+                if chunk_text:
+                    texts.append(chunk_text)
+                for item in chunk_results:
+                    item = dict(item)
+                    item["chunk_offset_seconds"] = offset
+                    combined_results.append(item)
+                chunk_path.unlink(missing_ok=True)
+                if self.device.startswith("cuda"):
+                    torch.cuda.empty_cache()
+        return " ".join(texts).strip(), combined_results
 
 
 def clean_sensevoice_text(text: str) -> str:
@@ -591,7 +685,22 @@ def build_markdown(video: VideoAudio, text: str, raw_result: list[dict[str, Any]
     lines = [
         f"# {video.title}",
         "",
+        f"**频道:** {video.uploader or '未知'}  ",
+        f"**链接:** [{video.webpage_url or video.url}]({video.webpage_url or video.url})  ",
+        f"**语言:** {display_language(language)}  ",
     ]
+    if video.duration:
+        lines.append(f"**时长:** {format_duration_compact(video.duration)}")
+    lines.extend([
+        f"**提取时间:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+    ])
+
+    placeholder = build_media_embed_placeholder(video)
+    if placeholder:
+        lines.extend([placeholder, ""])
+
+    lines.extend(["---", ""])
 
     timestamped_lines = build_timestamped_asr_lines(video, text, raw_result)
     if timestamped_lines:
@@ -600,6 +709,63 @@ def build_markdown(video: VideoAudio, text: str, raw_result: list[dict[str, Any]
         lines.append("> ASR returned empty text.")
 
     return "\n".join(lines)
+
+
+def display_language(language: str) -> str:
+    mapping = {
+        "auto": "自动识别",
+        "zh": "中文",
+        "en": "英文",
+        "yue": "粤语",
+        "ja": "日语",
+        "ko": "韩语",
+        "nospeech": "无语音",
+    }
+    normalized = (language or "auto").strip().lower()
+    return mapping.get(normalized, language or "自动识别")
+
+
+def format_duration_compact(seconds: float) -> str:
+    total = max(0, int(seconds or 0))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def build_media_embed_placeholder(video: VideoAudio) -> str:
+    if is_bilibili_url(video.webpage_url or video.url):
+        return build_embed_placeholder(
+            platform="bilibili",
+            platform_title="Bilibili 视频",
+            video_id=extract_bvid(video.webpage_url or video.url) or video.video_id,
+            original_url=video.webpage_url or video.url,
+            icon="📺",
+        )
+    if is_youtube_url(video.webpage_url or video.url):
+        return build_embed_placeholder(
+            platform="youtube",
+            platform_title="YouTube 视频",
+            video_id=video.video_id,
+            original_url=video.webpage_url or video.url,
+            icon="▶",
+        )
+    return ""
+
+
+def build_embed_placeholder(platform: str, platform_title: str, video_id: str, original_url: str, icon: str) -> str:
+    embed_id = f"{platform}-{(video_id or 'video').lower()}"
+    return f'''<div class="media-embed-placeholder" data-embed-id="{escape(embed_id, quote=True)}" data-platform="{escape(platform, quote=True)}" data-video-id="{escape(video_id or '', quote=True)}" data-start-time="" data-is-short="false" data-original-url="{escape(original_url or '', quote=True)}">
+\t\t\t<div class="media-embed-placeholder-content">
+\t\t\t\t<div class="media-embed-placeholder-icon">{escape(icon)}</div>
+\t\t\t\t<div class="media-embed-placeholder-text">
+\t\t\t\t\t<div class="media-embed-placeholder-title">{escape(platform_title)}</div>
+\t\t\t\t\t<div class="media-embed-placeholder-desc">滚动文档时将在浮窗播放</div>
+\t\t\t\t</div>
+\t\t\t\t<button class="media-embed-placeholder-play">▶ 播放</button>
+\t\t\t</div>
+\t\t</div>'''
 
 
 def timestamp_line(seconds: float, text: str) -> str:
@@ -626,6 +792,7 @@ def _timestamp_value_to_seconds(value: Any) -> float:
 def build_timestamped_asr_lines(video: VideoAudio, text: str, raw_result: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for item in raw_result or []:
+        chunk_offset = float(item.get("chunk_offset_seconds") or 0)
         for sentence in item.get("sentence_info") or []:
             sentence_text = clean_sensevoice_text(str(sentence.get("text") or ""))
             if not sentence_text:
@@ -634,7 +801,7 @@ def build_timestamped_asr_lines(video: VideoAudio, text: str, raw_result: list[d
             if start is None and isinstance(sentence.get("timestamp"), (list, tuple)):
                 timestamp = sentence.get("timestamp") or [0]
                 start = timestamp[0] if timestamp else 0
-            lines.append(timestamp_line(_timestamp_value_to_seconds(start), sentence_text))
+            lines.append(timestamp_line(chunk_offset + _timestamp_value_to_seconds(start), sentence_text))
     if lines:
         return lines
 

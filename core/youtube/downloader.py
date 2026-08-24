@@ -1,8 +1,12 @@
 """字幕下载引擎：默认下载视频原语言字幕"""
 import asyncio
+import json
+import os
 import random
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     TranscriptsDisabled,
@@ -90,6 +94,167 @@ def _resolve_language(
     raise NoTranscriptFound(video_id)
 
 
+def _matching_language_keys(
+    available: dict,
+    language: str | None,
+    *,
+    prefer_original: bool = False,
+) -> list[str]:
+    """Return yt-dlp language keys ordered from the closest match outwards."""
+    if not language:
+        return []
+
+    wanted = language.casefold()
+    keys = [key for key in available if key != "live_chat"]
+    exact = [key for key in keys if key.casefold() == wanted]
+    original = [key for key in keys if key.casefold() == f"{wanted}-orig"]
+    variants = [
+        key for key in keys
+        if key.casefold().startswith(f"{wanted}-") and key not in original
+    ]
+    return original + exact + variants if prefer_original else exact + variants + original
+
+
+def _select_ytdlp_subtitle(
+    info: dict,
+    preferred_lang: str | None,
+    original_language: str | None,
+) -> tuple[str, dict]:
+    """Select one JSON3 subtitle track from yt-dlp metadata."""
+    manual = info.get("subtitles") or {}
+    automatic = info.get("automatic_captions") or {}
+
+    candidates: list[tuple[dict, str]] = []
+    for language in (preferred_lang, original_language):
+        candidates.extend(
+            (manual, key)
+            for key in _matching_language_keys(manual, language)
+        )
+        candidates.extend(
+            (automatic, key)
+            for key in _matching_language_keys(
+                automatic,
+                language,
+                prefer_original=language == original_language,
+            )
+        )
+
+    candidates.extend((manual, key) for key in manual if key != "live_chat")
+
+    original_auto = [
+        key for key in automatic
+        if key != "live_chat" and key.casefold().endswith("-orig")
+    ]
+    remaining_auto = [
+        key for key in automatic
+        if key != "live_chat" and key not in original_auto
+    ]
+    candidates.extend((automatic, key) for key in original_auto + remaining_auto)
+
+    seen: set[tuple[int, str]] = set()
+    for source, language in candidates:
+        marker = (id(source), language)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        formats = source.get(language) or []
+        json3 = next((item for item in formats if item.get("ext") == "json3"), None)
+        if json3:
+            return language, json3
+
+    raise RuntimeError("yt-dlp 没有找到可下载的 JSON3 字幕")
+
+
+def _parse_ytdlp_json3(payload: dict) -> list[dict]:
+    """Convert YouTube JSON3 events to youtube-transcript-api compatible rows."""
+    rows: list[dict] = []
+    for event in payload.get("events") or []:
+        segments = event.get("segs") or []
+        text = "".join(str(segment.get("utf8") or "") for segment in segments).strip()
+        if not text:
+            continue
+        rows.append({
+            "text": text,
+            "start": float(event.get("tStartMs") or 0) / 1000,
+            "duration": float(event.get("dDurationMs") or 0) / 1000,
+        })
+    if not rows:
+        raise RuntimeError("yt-dlp 下载到的 JSON3 字幕没有文本片段")
+    return rows
+
+
+def _resolve_language_with_ytdlp(
+    meta: VideoMeta,
+    preferred_lang: str | None,
+) -> tuple[str, list[dict]]:
+    """Use yt-dlp as the second subtitle source without downloading the video."""
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "retries": 3,
+    }
+    proxy = os.environ.get("VIDEO_SUB_MD_YOUTUBE_PROXY", "").strip()
+    if proxy:
+        options["proxy"] = proxy
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(meta.url, download=False)
+        meta.title = str(info.get("title") or meta.title)
+        meta.channel = str(info.get("channel") or info.get("uploader") or meta.channel)
+        if info.get("duration") is not None:
+            meta.duration = int(info["duration"])
+        meta.original_language = str(info.get("language") or meta.original_language or "") or None
+        language, subtitle = _select_ytdlp_subtitle(
+            info,
+            preferred_lang,
+            meta.original_language,
+        )
+
+        if subtitle.get("data") is not None:
+            payload = json.loads(subtitle["data"])
+        else:
+            with TemporaryDirectory(prefix="video-sub-md-ytdlp-") as temp_dir:
+                subtitle_path = Path(temp_dir) / "subtitle.json3"
+                download_info = subtitle.copy()
+                download_info.setdefault("http_headers", info.get("http_headers"))
+                succeeded = ydl.dl(str(subtitle_path), download_info, subtitle=True)
+                if succeeded is False or not subtitle_path.exists():
+                    raise RuntimeError("yt-dlp 字幕下载失败")
+                payload = json.loads(subtitle_path.read_text(encoding="utf-8"))
+
+    return language, _parse_ytdlp_json3(payload)
+
+
+def _resolve_language_with_fallback(
+    meta: VideoMeta,
+    preferred_lang: str | None,
+) -> tuple[str, list[dict]]:
+    """Try youtube-transcript-api first, then fall back to yt-dlp subtitles."""
+    # A configured proxy is used for recovery after the transcript API has
+    # already identified the direct IP as blocked.  yt-dlp can still retrieve
+    # JSON3 captions through that route, while another direct API call only
+    # adds delay and triggers more blocking.
+    if os.environ.get("VIDEO_SUB_MD_YOUTUBE_PROXY", "").strip():
+        return _resolve_language_with_ytdlp(meta, preferred_lang)
+    try:
+        return _resolve_language(meta.video_id, preferred_lang, meta.original_language)
+    except Exception as transcript_error:
+        try:
+            return _resolve_language_with_ytdlp(meta, preferred_lang)
+        except Exception as ytdlp_error:
+            if isinstance(
+                transcript_error,
+                (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable),
+            ):
+                raise transcript_error
+            raise RuntimeError(
+                "youtube-transcript-api 失败；"
+                f"yt-dlp 字幕兜底也失败: {ytdlp_error}；"
+                f"原始错误: {transcript_error}"
+            ) from transcript_error
+
+
 def _safe_filename(title: str, video_id: str) -> str:
     """生成安全的文件名，删除 Windows 保留字符，替换 # 为 _ 避免 Obsidian URI 解析问题"""
     safe = title.strip()
@@ -111,7 +276,7 @@ def download_one(
 ) -> DownloadResult:
     """下载单个视频并保存为 Markdown"""
     try:
-        lang_code, raw_data = _resolve_language(meta.video_id, preferred_lang, meta.original_language)
+        lang_code, raw_data = _resolve_language_with_fallback(meta, preferred_lang)
 
         # 转换为 Markdown
         md_content = transcript_to_md(meta, raw_data, lang_code)
