@@ -37,6 +37,8 @@ def set_cookie(cookie: str) -> None:
 
     # 清理：去除首尾空白、换行、不可见字符
     cleaned = cookie.strip().replace("\n", "").replace("\r", "").replace("\t", "")
+    # Markdown/聊天窗口里下划线有时会被转义成 \_，直接粘贴时要还原。
+    cleaned = cleaned.replace("\\_", "_")
 
     # 如果用户复制了整个 "SESSDATA=xxx"，只取后面的值
     if cleaned.lower().startswith("sessdata="):
@@ -151,18 +153,22 @@ def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
     """获取视频可用字幕轨道列表。"""
     # 优先使用 wbi/v2 接口；B站核心接口已启用 WBI 签名
     urls_to_try = []
+    last_error = None
     if aid:
-        urls_to_try.append(
-            (
-                BILI_PLAYER_WBI_API,
-                sign_params({"aid": str(aid), "cid": str(cid), "bvid": bvid}),
+        try:
+            urls_to_try.append(
+                (
+                    BILI_PLAYER_WBI_API,
+                    sign_params({"aid": str(aid), "cid": str(cid), "bvid": bvid}),
+                )
             )
-        )
+        except Exception as e:
+            last_error = e
+            _debug(f"WBI 签名失败，跳过 wbi/v2 并回退 player/v2: {e}")
     urls_to_try.append(
         (BILI_PLAYER_V2_API, {"bvid": bvid, "cid": cid, "aid": aid})
     )
 
-    last_error = None
     for url, params in urls_to_try:
         try:
             _debug(f"字幕 API 请求: {url} params={params}")
@@ -234,13 +240,20 @@ def fetch_subtitle_tracks(bvid: str, cid: str, aid: str) -> List[dict]:
                         "is_ai": lan.startswith("ai-"),
                     }
                 )
-            return tracks
+            if tracks:
+                return tracks
+
+            last_error = None
+            _debug("当前字幕接口未返回可用 subtitle_url，继续尝试下一个接口")
+            continue
         except Exception as e:
             _debug(f"字幕 API 异常: {e}")
             last_error = e
             continue
 
-    raise last_error or RuntimeError("无法获取字幕列表")
+    if last_error:
+        raise last_error
+    return []
 
 
 def fetch_collection_videos(collection_type: str, params: dict) -> List[str]:

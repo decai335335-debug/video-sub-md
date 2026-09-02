@@ -40,6 +40,101 @@ console = Console(force_terminal=True)
 app = typer.Typer(add_completion=False)
 COURSERA_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Coursera"
 DOUYIN_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / "Douyin"
+MERGE_OUTPUT_DIR = Path("E:/Obsidian/主仓库/00000-Sub_Merge")
+
+
+def _read_md_for_merge(path: Path) -> str:
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _merge_downloaded_markdown(success_results: List[DownloadResult]) -> Optional[Path]:
+    paths: List[Path] = []
+    seen = set()
+    for result in success_results:
+        if not result.filepath:
+            continue
+        path = result.filepath
+        if not path.exists() or path.suffix.lower() != ".md":
+            continue
+        key = str(path.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+
+    if len(paths) < 2:
+        console.print("[dim]本次可合并的 Markdown 少于 2 个，已跳过 merge[/dim]")
+        return None
+
+    first_parent = paths[0].parent
+    if all(path.parent == first_parent for path in paths):
+        source_name = first_parent.name
+    else:
+        common = Path(os.path.commonpath([str(path.parent) for path in paths]))
+        source_name = common.name if common.name else first_parent.name
+
+    MERGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_file = MERGE_OUTPUT_DIR / f"{add_date_prefix(source_name)}_合并.md"
+    if output_file in paths:
+        paths = [path for path in paths if path != output_file]
+
+    merged_parts = []
+    total_chars = 0
+    for path in paths:
+        content = _read_md_for_merge(path).strip()
+        if not content:
+            continue
+        merged_parts.append(f"<!-- 来源：{path.name} -->\n\n{content}")
+        total_chars += len(content)
+
+    if not merged_parts:
+        console.print("[yellow]没有可合并的 Markdown 内容[/yellow]")
+        return None
+
+    output_file.write_text("\n\n---\n\n".join(merged_parts) + "\n", encoding="utf-8")
+    size_kb = output_file.stat().st_size / 1024
+    console.print(f"[green][OK][/green] merge 完成: {output_file}")
+    console.print(f"[dim]合并文件数: {len(merged_parts)} | 字符数: {total_chars:,} | 大小: {size_kb:.1f} KB[/dim]")
+    return output_file
+
+
+def _maybe_merge_downloaded_markdown(success_results: List[DownloadResult]) -> Optional[Path]:
+    if not success_results:
+        return None
+    console.print()
+    while True:
+        choice = input("是否 merge 本次下载的 Markdown？(a 是 / b 否): ").strip().lower()
+        if choice == "a":
+            return _merge_downloaded_markdown(success_results)
+        if choice == "b":
+            console.print("[dim]已跳过 merge[/dim]")
+            return None
+        console.print("[yellow]请输入 a 或 b[/yellow]")
+
+
+def _resolve_youtube_cookie_file(explicit_path: Optional[Path]) -> Optional[Path]:
+    """Resolve YouTube cookies for both CLI and launcher-menu runs."""
+    if explicit_path:
+        return explicit_path.resolve()
+
+    env_path = os.environ.get("VIDEO_SUB_MD_YOUTUBE_COOKIES", "").strip()
+    candidates = []
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(Path(__file__).resolve().parent / "cookies" / "youtube.txt")
+
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved.is_file():
+            return resolved
+    return None
+
 
 # 导入翻译模块
 try:
@@ -973,6 +1068,51 @@ def _expand_youtube_playlists(
     return _dedupe_bilibili_tasks(expanded)
 
 
+def _skip_existing_youtube_tasks(tasks: List[tuple[str, Path]]) -> List[tuple[str, Path]]:
+    """Skip videos already represented by Markdown files in their playlist folder."""
+    if not tasks:
+        return []
+
+    from core.youtube.extractor import extract_video_id
+
+    ids_by_output_dir: dict[Path, set[str]] = {}
+    remaining: List[tuple[str, Path]] = []
+    skipped = 0
+
+    for url, output_dir in tasks:
+        resolved_dir = output_dir.resolve()
+        if resolved_dir not in ids_by_output_dir:
+            existing_ids: set[str] = set()
+            if resolved_dir.is_dir():
+                for markdown_path in resolved_dir.glob("*.md"):
+                    try:
+                        content = markdown_path.read_text(encoding="utf-8", errors="ignore")
+                    except OSError:
+                        continue
+                    existing_ids.update(
+                        re.findall(r"youtube\.com/watch\?v=([0-9A-Za-z_-]{11})", content)
+                    )
+                    existing_ids.update(
+                        re.findall(r'data-video-id="([0-9A-Za-z_-]{11})"', content)
+                    )
+            ids_by_output_dir[resolved_dir] = existing_ids
+
+        try:
+            video_id = extract_video_id(url)
+        except ValueError:
+            remaining.append((url, output_dir))
+            continue
+
+        if video_id in ids_by_output_dir[resolved_dir]:
+            skipped += 1
+        else:
+            remaining.append((url, output_dir))
+
+    if skipped:
+        console.print(f"[dim]断点续传：已跳过 {skipped} 个已有 YouTube Markdown。[/dim]")
+    return remaining
+
+
 def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[tuple[str, Path]]:
     """Ask whether Bilibili collections/seasons should be expanded to all videos."""
     if not urls:
@@ -985,6 +1125,10 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
     expanded: List[tuple[str, Path]] = []
     current_only_for_rest = False
     for url in urls:
+        if current_only_for_rest:
+            expanded.append((url, output_base_dir))
+            continue
+
         try:
             title = ""
             bvids: List[str] = []
@@ -1005,10 +1149,6 @@ def _expand_bilibili_playlists(urls: List[str], output_base_dir: Path) -> List[t
 
             item_count = len(page_urls) if page_urls else len(bvids)
             if item_count <= 1:
-                expanded.append((url, output_base_dir))
-                continue
-
-            if current_only_for_rest:
                 expanded.append((url, output_base_dir))
                 continue
 
@@ -1088,6 +1228,7 @@ def _process_downloads(
         youtube_output_base,
         youtube_cookie_file=youtube_cookie_file,
     )
+    youtube_tasks = _skip_existing_youtube_tasks(youtube_tasks)
 
     coursera_expand_errors = []
     if coursera_urls:
@@ -1341,6 +1482,8 @@ def _process_downloads(
         console.print()
         console.print("[dim]提示: 未设置 DEEPSEEK_API_KEY 环境变量，如需生成分析或翻译请先设置[/dim]")
 
+    _maybe_merge_downloaded_markdown(success_results)
+
     return report
 
 
@@ -1370,6 +1513,11 @@ def download(
 
     # 优先命令行参数，其次环境变量，最后配置文件中的默认值
     effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or DEFAULT_SESSDATA or ""
+    youtube_cookies = _resolve_youtube_cookie_file(youtube_cookies)
+    if youtube_cookies:
+        console.print(f"[dim]已启用 YouTube Cookie: {youtube_cookies}[/dim]")
+    else:
+        console.print("[dim]未配置 YouTube Cookie；登录/年龄限制视频可能无法访问。[/dim]")
 
     from core.bilibili.metadata import set_cookie
 
@@ -1431,9 +1579,10 @@ def download(
                 console.print("[yellow]警告: 当前 Cookie 未通过 B站登录校验，部分需要登录的字幕（含大部分 AI 生成字幕）可能无法获取[/yellow]")
                 console.print("[dim]提示: 请从浏览器开发者工具复制最新的 SESSDATA 值，或设置 BILI_COOKIE 环境变量[/dim]")
 
-        console.print("[dim]如需临时更新 B站 SESSDATA，输入 1 后回车；直接回车继续。[/dim]")
-        if input("  更新 SESSDATA? (1/回车)> ").strip() == "1":
-            user_cookie = input("  新 SESSDATA> ").strip()
+        console.print("[dim]如需临时更新 B站 SESSDATA，可输入 1 后回车再粘贴；也可直接粘贴 SESSDATA；直接回车继续。[/dim]")
+        cookie_choice = input("  更新 SESSDATA? (1/直接粘贴/回车)> ").strip()
+        if cookie_choice:
+            user_cookie = input("  新 SESSDATA> ").strip() if cookie_choice == "1" else cookie_choice
             if user_cookie:
                 effective_cookie = user_cookie
                 set_cookie(effective_cookie)
