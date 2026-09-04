@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Bilibili SESSDATA Helper</title>
+  <style>
+    body {
+      width: 360px;
+      margin: 0;
+      padding: 14px;
+      color: #1f2328;
+      font-family: "Microsoft YaHei", system-ui, sans-serif;
+      background: #f6f8fa;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .status {
+      min-height: 20px;
+      margin: 8px 0 12px;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 90px;
+      resize: vertical;
+      padding: 8px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background: #fff;
+      color: #24292f;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    button {
+      height: 34px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background: #fff;
+      color: #24292f;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button.primary {
+      border-color: #0969da;
+      background: #0969da;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Bilibili SESSDATA Helper</h1>
+  <div id="status" class="status">正在读取当前浏览器里的 B站 Cookie...</div>
+  <textarea id="output" spellcheck="false" placeholder="SESSDATA 会显示在这里"></textarea>
+  <div class="actions">
+    <button id="copy" class="primary">复制 SESSDATA</button>
+    <button id="download">下载 cookies.txt</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

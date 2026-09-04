@@ -136,6 +136,54 @@ def _resolve_youtube_cookie_file(explicit_path: Optional[Path]) -> Optional[Path
     return None
 
 
+def _extract_sessdata_from_cookie_text(text: str) -> str:
+    for raw_part in text.replace("\n", ";").split(";"):
+        part = raw_part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        if name.strip().lower() == "sessdata":
+            return value.strip().replace("\\_", "_")
+    return ""
+
+
+def _load_bilibili_sessdata_from_file(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    sessdata = _extract_sessdata_from_cookie_text(raw)
+    if sessdata:
+        return sessdata
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7 and parts[5].lower() == "sessdata":
+            return parts[6].strip().replace("\\_", "_")
+    return ""
+
+
+def _resolve_bilibili_cookie_from_file() -> tuple[str, Optional[Path]]:
+    env_path = os.environ.get("VIDEO_SUB_MD_BILI_COOKIES", "").strip()
+    candidates: List[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(Path(__file__).resolve().parent / "cookies" / "bilibili.txt")
+
+    for candidate in candidates:
+        path = candidate.expanduser().resolve()
+        sessdata = _load_bilibili_sessdata_from_file(path)
+        if sessdata:
+            return sessdata, path
+    return "", None
+
+
 # 导入翻译模块
 try:
     from core.translator import translate_subtitle_with_deepseek, add_translation_to_file
@@ -1511,8 +1559,11 @@ def download(
         border_style="cyan",
     ))
 
-    # 优先命令行参数，其次环境变量，最后配置文件中的默认值
-    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or DEFAULT_SESSDATA or ""
+    # 优先命令行参数/环境变量，其次固定 cookies 文件，最后配置文件中的默认值
+    file_cookie, file_cookie_path = _resolve_bilibili_cookie_from_file()
+    effective_cookie = cookie or os.environ.get("BILI_COOKIE") or os.environ.get("BILIBILI_SESSDATA") or file_cookie or DEFAULT_SESSDATA or ""
+    if file_cookie and effective_cookie == file_cookie and file_cookie_path:
+        console.print(f"[dim]已启用 B站 Cookie: {file_cookie_path}[/dim]")
     youtube_cookies = _resolve_youtube_cookie_file(youtube_cookies)
     if youtube_cookies:
         console.print(f"[dim]已启用 YouTube Cookie: {youtube_cookies}[/dim]")

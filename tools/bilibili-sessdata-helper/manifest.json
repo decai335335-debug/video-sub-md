@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Bilibili SESSDATA Helper",
+  "version": "0.1.0",
+  "description": "Copy or export Bilibili SESSDATA from the current browser profile.",
+  "permissions": ["cookies", "downloads", "clipboardWrite"],
+  "host_permissions": ["https://*.bilibili.com/*"],
+  "action": {
+    "default_title": "Bilibili SESSDATA Helper",
+    "default_popup": "popup.html"
+  }
+}
